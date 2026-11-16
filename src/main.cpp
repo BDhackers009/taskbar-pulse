@@ -1851,7 +1851,7 @@ static bool FullscreenOnTaskbarMonitor(App& app) {
 }
 
 static bool TaskbarCoversWidget(App& app) {
-  if (!app.taskbar || !app.hwnd) return false;
+  if (!app.taskbar || !app.hwnd || !IsWindow(app.taskbar)) return false;
   // While Start or Search is open the shell lifts the taskbar above every
   // topmost window. Walk the z-order above us (a server-side query) instead of
   // WindowFromPoint, which sends a message to whatever is under the point and
@@ -1860,6 +1860,56 @@ static bool TaskbarCoversWidget(App& app) {
   for (int guard = 0; h && guard < 256; ++guard, h = GetWindow(h, GW_HWNDPREV))
     if (h == app.taskbar) return true;
   return false;
+}
+
+// A fullscreen window can cover the taskbar without ever taking focus. Compare
+// the z-order instead of asking what is under a point: if a monitor-sized window
+// appears above the taskbar, the strip is hidden. EnumWindows and GetWindowRect
+// are server-side and cannot block on a busy application.
+struct CoverSearch {
+  HWND taskbar;
+  HWND self;
+  RECT monitor;
+  bool covered;
+};
+
+static BOOL CALLBACK CoverProc(HWND hwnd, LPARAM param) {
+  auto* s = (CoverSearch*)param;
+  if (hwnd == s->taskbar) {
+    return FALSE;  // the taskbar is above everything else we have seen
+  }
+  if (!IsWindowVisible(hwnd) || hwnd == s->self) return TRUE;
+  wchar_t cls[64] = {};
+  GetClassNameW(hwnd, cls, 64);
+  static const wchar_t* kShellClasses[] = {
+      L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd",
+      L"ForegroundStaging", L"XamlExplorerHostIslandWindow",
+      L"TopLevelWindowForOverflowXamlIsland", L"Wnd_StartFeed",
+      L"Windows.UI.Core.CoreWindow"};
+  for (const wchar_t* shell : kShellClasses)
+    if (!wcscmp(cls, shell)) return TRUE;
+  if (!wcsncmp(cls, L"DesktopFlyoutHostClass.", 23)) return TRUE;
+  DWORD cloaked = 0;
+  if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+    return TRUE;
+  RECT wr{};
+  if (!GetWindowRect(hwnd, &wr)) return TRUE;
+  const RECT& m = s->monitor;
+  if (wr.left <= m.left && wr.top <= m.top && wr.right >= m.right && wr.bottom >= m.bottom) {
+    s->covered = true;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static bool TaskbarCoveredByFullscreen(App& app) {
+  if (!app.taskbar || !IsWindow(app.taskbar)) return false;
+  MONITORINFO mi{};
+  mi.cbSize = sizeof(mi);
+  if (!GetMonitorInfoW(MonitorFromWindow(app.taskbar, MONITOR_DEFAULTTONEAREST), &mi)) return false;
+  CoverSearch s{app.taskbar, app.hwnd, mi.rcMonitor, false};
+  EnumWindows(CoverProc, (LPARAM)&s);
+  return s.covered;
 }
 
 static void ShowWidget(App& app, bool show) {
@@ -2345,7 +2395,9 @@ static void TakeForeground(HWND hwnd) {
   HWND fg = GetForegroundWindow();
   DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
   DWORD myThread = GetCurrentThreadId();
-  if (fgThread && fgThread != myThread) {
+  // AttachThreadInput waits on the other thread. If the foreground app is hung,
+  // that would freeze Settings before it even appears; fall back instead.
+  if (fgThread && fgThread != myThread && !IsHungAppWindow(fg)) {
     AttachThreadInput(myThread, fgThread, TRUE);
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
@@ -2938,7 +2990,7 @@ static void UpdatePosition(App& app, bool force) {
   app.oh = L.h;
 
   bool taskbarReady = TaskbarVisible(app, taskbarRect) && IsWindowVisible(app.taskbar) &&
-                      !FullscreenOnTaskbarMonitor(app);
+                      !FullscreenOnTaskbarMonitor(app) && !TaskbarCoveredByFullscreen(app);
   bool show = taskbarReady && app.hasSample;
   app.samplingActive.store(taskbarReady);
 
@@ -3320,6 +3372,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   CoUninitialize();
   return 0;
 }
+
 
 
 
