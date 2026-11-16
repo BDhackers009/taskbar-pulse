@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1
+
+- Menu checkmarks are now a light tint of the system accent on the dark menu instead of the raw accent. Contrast goes from about 3.7:1 to 7.5:1, so the checks are easy to see.
+- Settings footer and tray tooltip report 1.1.1; the exe metadata is 1.1.1.0.
+
 ## 1.1.0
 
 - The whole top band of Settings is now a drag handle. Before, only the strip below the shadow moved the window, and the margin passed clicks through to the window underneath.

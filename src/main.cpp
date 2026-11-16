@@ -63,7 +63,7 @@ using Microsoft::WRL::ComPtr;
 // Small helpers
 
 static constexpr wchar_t kAppName[] = L"Taskbar Pulse";
-static constexpr wchar_t kVersion[] = L"1.1";
+static constexpr wchar_t kVersion[] = L"1.1.1";
 static constexpr wchar_t kWndClass[] = L"TaskbarPulse.Widget";
 
 static const UINT WM_APP_SAMPLE = WM_APP + 10;
@@ -171,6 +171,7 @@ struct Theme {
   D2D1_COLOR_F bg = Rgba(1, 1, 1, 0.055f);
   D2D1_COLOR_F border = Rgba(1, 1, 1, 0.085f);
   D2D1_COLOR_F accent = Rgba(0.0f, 0.47f, 0.83f, 1.0f);
+  D2D1_COLOR_F accentText = Rgba(0.45f, 0.75f, 1.0f, 1.0f);  // readable on the dark menu
   D2D1_COLOR_F warn = Rgba(0.91f, 0.64f, 0.22f, 1.0f);
   D2D1_COLOR_F hot = Rgba(0.90f, 0.32f, 0.30f, 1.0f);
   D2D1_COLOR_F menuBg = Rgba(0.115f, 0.115f, 0.125f, 0.98f);
@@ -330,6 +331,11 @@ static Theme LoadTheme() {
     t.accent = Rgba(((accent >> 0) & 0xFF) / 255.0f, ((accent >> 8) & 0xFF) / 255.0f,
                     ((accent >> 16) & 0xFF) / 255.0f, 1.0f);
   }
+  // The system accent is too dark for a check glyph on the dark menu; use a
+  // lighter tint of the same hue there, and the raw accent on the light menu.
+  auto lighten = [](float c) { return c + (1.0f - c) * 0.45f; };
+  t.accentText = t.light ? t.accent
+                         : Rgba(lighten(t.accent.r), lighten(t.accent.g), lighten(t.accent.b), 1.0f);
   if (t.light) {
     t.text = Rgba(0.07f, 0.07f, 0.07f, 0.95f);
     t.label = Rgba(0.07f, 0.07f, 0.07f, 0.58f);
@@ -1706,7 +1712,8 @@ bool Renderer::PaintMenu(HWND hwnd, int x, int y, const Theme& theme,
 
     const float baseline = top + itemH * 0.665f;
     if (item.checked)
-      DrawTextAt(menu_.Get(), L"\x2713", body.left + 12.0f * s, baseline, 20.0f * s, theme.accent);
+      DrawTextAt(menu_.Get(), L"\x2713", body.left + 12.0f * s, baseline, 20.0f * s,
+                 theme.accentText);
     DrawTextAt(menu_.Get(), item.text.c_str(), body.left + menuui::kTextX * s, baseline,
                std::max(10.0f, body.right - body.left - menuui::kTextX * s - 10.0f * s),
                item.header ? theme.label : theme.text);
@@ -3372,6 +3379,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   CoUninitialize();
   return 0;
 }
+
 
 
 
