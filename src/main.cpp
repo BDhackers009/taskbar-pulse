@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "resource.h"
+#include "theme_color.h"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -63,7 +64,7 @@ using Microsoft::WRL::ComPtr;
 // Small helpers
 
 static constexpr wchar_t kAppName[] = L"Taskbar Pulse";
-static constexpr wchar_t kVersion[] = L"1.1.1";
+static constexpr wchar_t kVersion[] = L"1.1.2";
 static constexpr wchar_t kWndClass[] = L"TaskbarPulse.Widget";
 
 static const UINT WM_APP_SAMPLE = WM_APP + 10;
@@ -171,12 +172,14 @@ struct Theme {
   D2D1_COLOR_F bg = Rgba(1, 1, 1, 0.055f);
   D2D1_COLOR_F border = Rgba(1, 1, 1, 0.085f);
   D2D1_COLOR_F accent = Rgba(0.0f, 0.47f, 0.83f, 1.0f);
-  D2D1_COLOR_F accentText = Rgba(0.45f, 0.75f, 1.0f, 1.0f);  // readable on the dark menu
+  D2D1_COLOR_F accentText = Rgba(0.45f, 0.75f, 1.0f, 1.0f);  // >= 4.5:1 on the menu
+  D2D1_COLOR_F accentFill = Rgba(0.0f, 0.47f, 0.83f, 1.0f);  // >= 3:1 on the track
   D2D1_COLOR_F warn = Rgba(0.91f, 0.64f, 0.22f, 1.0f);
   D2D1_COLOR_F hot = Rgba(0.90f, 0.32f, 0.30f, 1.0f);
   D2D1_COLOR_F menuBg = Rgba(0.115f, 0.115f, 0.125f, 0.98f);
   D2D1_COLOR_F menuBorder = Rgba(1, 1, 1, 0.10f);
   D2D1_COLOR_F menuHover = Rgba(1, 1, 1, 0.075f);
+  D2D1_COLOR_F chip = Rgba(1, 1, 1, 0.125f);
   D2D1_COLOR_F shadow = Rgba(0, 0, 0, 0.18f);
 };
 
@@ -331,14 +334,11 @@ static Theme LoadTheme() {
     t.accent = Rgba(((accent >> 0) & 0xFF) / 255.0f, ((accent >> 8) & 0xFF) / 255.0f,
                     ((accent >> 16) & 0xFF) / 255.0f, 1.0f);
   }
-  // The system accent is too dark for a check glyph on the dark menu; use a
-  // lighter tint of the same hue there, and the raw accent on the light menu.
-  auto lighten = [](float c) { return c + (1.0f - c) * 0.45f; };
-  t.accentText = t.light ? t.accent
-                         : Rgba(lighten(t.accent.r), lighten(t.accent.g), lighten(t.accent.b), 1.0f);
+  // The system accent can be any color; keep accent text at 4.5:1 and accent
+  // fills at 3:1 instead of guessing a fixed tint.
   if (t.light) {
     t.text = Rgba(0.07f, 0.07f, 0.07f, 0.95f);
-    t.label = Rgba(0.07f, 0.07f, 0.07f, 0.58f);
+    t.label = Rgba(0.07f, 0.07f, 0.07f, 0.60f);
     t.track = Rgba(0.0f, 0.0f, 0.0f, 0.13f);
     t.bg = Rgba(0.0f, 0.0f, 0.0f, 0.045f);
     t.border = Rgba(0.0f, 0.0f, 0.0f, 0.075f);
@@ -347,8 +347,22 @@ static Theme LoadTheme() {
     t.menuBg = Rgba(0.975f, 0.975f, 0.98f, 0.99f);
     t.menuBorder = Rgba(0.0f, 0.0f, 0.0f, 0.10f);
     t.menuHover = Rgba(0.0f, 0.0f, 0.0f, 0.055f);
+    t.chip = Rgba(0.0f, 0.0f, 0.0f, 0.075f);
     t.shadow = Rgba(0.0f, 0.0f, 0.0f, 0.20f);
   }
+
+  // The panel is translucent, so measure text against its worst-case composite
+  // over the desktop. Accent fills also appear on the widget's load bars, whose
+  // track sits over the taskbar; that track is lighter (dark) or darker (light)
+  // than the menu track, so it is the worst case for switches and the ring too.
+  const D2D1_COLOR_F taskbar = t.light ? Rgba(0.953f, 0.953f, 0.953f, 1)
+                                       : Rgba(0.125f, 0.125f, 0.125f, 1);
+  const D2D1_COLOR_F widgetTrack =
+      themecolor::Composite(t.track, themecolor::Composite(t.bg, taskbar));
+  const themecolor::AccentRamp ramp = themecolor::AccentRampFor(
+      t.accent, t.light, t.text, t.menuBg, t.menuHover, widgetTrack);
+  t.accentText = ramp.text;
+  t.accentFill = ramp.fill;
   return t;
 }
 
@@ -1160,7 +1174,7 @@ bool Renderer::PaintSettings(HWND hwnd, int x, int y, const Theme& theme, const 
   section(L.secBehavior, L"BEHAVIOUR");
   if (L.gpuSelector) section(L.secGpu, L"GPU SOURCE");
 
-  D2D1_COLOR_F chip = theme.light ? Rgba(0, 0, 0, 0.075f) : Rgba(1, 1, 1, 0.125f);
+  const D2D1_COLOR_F chip = theme.chip;
   auto metricPill = [&](const RECT& r, bool on, const wchar_t* text) {
     if (on) fillRound(r, 7.0f * s, chip);
     DrawTextAt(value_.Get(), text, (float)r.left, (float)r.bottom - 10.5f * s,
@@ -1176,13 +1190,17 @@ bool Renderer::PaintSettings(HWND hwnd, int x, int y, const Theme& theme, const 
                (float)(row.right - row.left), theme.text);
     float h = (float)(sw.bottom - sw.top);
     fillRound(sw, h / 2.0f,
-              on ? theme.accent : (theme.light ? Rgba(0, 0, 0, 0.18f) : Rgba(1, 1, 1, 0.16f)));
+              on ? theme.accentFill : (theme.light ? Rgba(0, 0, 0, 0.18f) : Rgba(1, 1, 1, 0.16f)));
     float knob = h - 4.0f * s;
     float kx = on ? (float)sw.right - 2.0f * s - knob : (float)sw.left + 2.0f * s;
     D2D1_ELLIPSE dot{D2D1::Point2F(kx + knob / 2.0f, (sw.top + sw.bottom) * 0.5f), knob / 2.0f,
                      knob / 2.0f};
     brush_->SetColor(Rgba(1, 1, 1, 0.98f));
     target_->FillEllipse(dot, brush_.Get());
+    // A white knob can disappear on a light accent or a light-theme off track.
+    // A hairline edge keeps the knob and its position visible in every case.
+    brush_->SetColor(Rgba(0, 0, 0, 0.55f));
+    target_->DrawEllipse(dot, brush_.Get(), std::max(1.0f, 1.1f * s));
   };
   switchRow(L.barsRow, L.barsSwitch, L"Show load bars", view.bars);
   switchRow(L.tempRow, L.tempSwitch, L"Show CPU temperature", view.temps);
@@ -1267,8 +1285,9 @@ bool Renderer::PaintSettings(HWND hwnd, int x, int y, const Theme& theme, const 
   }
 
   if (hover == CTL_RESET) fillRound(L.reset, 6.0f * s, theme.menuHover);
-  DrawTextAt(menu_.Get(), L"Reset position", (float)L.reset.left + 8.0f * s,
-             (float)L.reset.bottom - 9.0f * s, (float)(L.reset.right - L.reset.left), theme.accent);
+  DrawTextAt(menu_.Get(), L"Reset position", (float)L.reset.left,
+             (float)L.reset.bottom - 9.0f * s, (float)(L.reset.right - L.reset.left),
+             theme.accentText);
   if (hover == CTL_EXIT) fillRound(L.exitBtn, 6.0f * s, theme.menuHover);
   DrawTextAt(menu_.Get(), L"Exit", (float)L.exitBtn.left + 6.0f * s,
              (float)L.exitBtn.bottom - 9.0f * s, (float)(L.exitBtn.right - L.exitBtn.left),
@@ -1286,7 +1305,7 @@ bool Renderer::PaintSettings(HWND hwnd, int x, int y, const Theme& theme, const 
       D2D1_ROUNDED_RECT ring{D2D1::RectF((float)fr.left - pad, (float)fr.top - pad,
                                          (float)fr.right + pad, (float)fr.bottom + pad),
                              7.0f * s, 7.0f * s};
-      brush_->SetColor(theme.accent);
+      brush_->SetColor(theme.accentFill);
       target_->DrawRoundedRectangle(ring, brush_.Get(), 1.6f * s);
     }
   }
@@ -1621,7 +1640,7 @@ bool Renderer::Paint(HWND hwnd, int x, int y, const Layout& L, const Theme& them
       if (pct >= 0.0f) {
         float fill = barW * ClampF(pct, 0.0f, 100.0f) / 100.0f;
         if (fill > 0.5f) {
-          D2D1_COLOR_F color = theme.accent;
+          D2D1_COLOR_F color = theme.accentFill;
           if (alert[metric] >= 2)
             color = theme.hot;
           else if (alert[metric] == 1)
@@ -1711,9 +1730,25 @@ bool Renderer::PaintMenu(HWND hwnd, int x, int y, const Theme& theme,
     }
 
     const float baseline = top + itemH * 0.665f;
-    if (item.checked)
-      DrawTextAt(menu_.Get(), L"\x2713", body.left + 12.0f * s, baseline, 20.0f * s,
-                 theme.accentText);
+    if (item.checked) {
+      // A stroke stays crisp at every DPI and does not depend on the check
+      // glyph being present (or ending up regular weight) in the fallback font.
+      // One path gives the elbow a proper miter instead of two overlapping lines.
+      ComPtr<ID2D1PathGeometry> check;
+      ComPtr<ID2D1GeometrySink> sink;
+      if (SUCCEEDED(factory_->CreatePathGeometry(check.GetAddressOf())) &&
+          SUCCEEDED(check->Open(sink.GetAddressOf()))) {
+        const float x = body.left + 13.0f * s;
+        const float cy = top + itemH * 0.5f;
+        sink->BeginFigure(D2D1::Point2F(x, cy + 0.5f * s), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(D2D1::Point2F(x + 3.4f * s, cy + 3.3f * s));
+        sink->AddLine(D2D1::Point2F(x + 9.4f * s, cy - 3.9f * s));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->Close();
+        brush_->SetColor(theme.accentText);
+        target_->DrawGeometry(check.Get(), brush_.Get(), 1.7f * s, nullptr);
+      }
+    }
     DrawTextAt(menu_.Get(), item.text.c_str(), body.left + menuui::kTextX * s, baseline,
                std::max(10.0f, body.right - body.left - menuui::kTextX * s - 10.0f * s),
                item.header ? theme.label : theme.text);
@@ -3379,16 +3414,3 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   CoUninitialize();
   return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

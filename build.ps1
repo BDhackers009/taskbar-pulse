@@ -22,6 +22,12 @@ foreach ($line in $envLines) {
   }
 }
 
+& cl.exe /nologo /std:c++20 /O2 /MT /EHsc /W3 `
+  /Fo"$build\contrast_test.obj" /Fe"$build\contrast_test.exe" "$root\tests\contrast_test.cpp"
+if ($LASTEXITCODE -ne 0) { throw "contrast test build failed ($LASTEXITCODE)" }
+& "$build\contrast_test.exe"
+if ($LASTEXITCODE -ne 0) { throw "contrast test failed ($LASTEXITCODE)" }
+
 & rc.exe /nologo /fo "$build\app.res" "$src\app.rc"
 if ($LASTEXITCODE -ne 0) { throw "rc failed ($LASTEXITCODE)" }
 
@@ -30,4 +36,5 @@ $exe = Join-Path $root "TaskbarPulse.exe"
   /Fo"$build\main.obj" /Fe"$exe" "$src\main.cpp" "$build\app.res" `
   /link /SUBSYSTEM:WINDOWS /MANIFEST:NO /INCREMENTAL:NO
 if ($LASTEXITCODE -ne 0) { throw "cl failed ($LASTEXITCODE)" }
+
 "OK: $exe  ({0:N0} bytes)" -f (Get-Item $exe).Length

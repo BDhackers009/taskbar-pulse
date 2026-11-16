@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>CPU, GPU, memory, network and temperature, in your taskbar.</b><br>
-  A 290 KB native widget. No installer, no runtime, no telemetry.
+  A 300 KB native widget. No installer, no runtime, no telemetry.
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-![Taskbar Pulse in the taskbar](docs/taskbar.png)
+![The Taskbar Pulse widget](docs/taskbar.png)
 
 ## What is this?
 
@@ -36,6 +36,7 @@ It was **vibecoded**: written with an AI assistant from a written spec, then rev
 - **CPU temperature** — straight from ACPI, no driver.
 - **Alerts that mean something** — each metric has its own warn and critical level; only the one that crosses changes colour.
 - **Taskbar-native** — drag it anywhere, lock it, go borderless. Follows light/dark, DPI, Explorer restarts and virtual desktops.
+- **Readable on every accent** — check marks, switches and the reset link are contrast-checked against the surfaces they sit on, so yellow, white or black accents stay legible in both themes.
 - **Keyboard settings** — Tab, Space/Enter, arrows, Esc.
 - **Nothing behind it** — no telemetry, no network calls, no service, no updates.
 
@@ -45,7 +46,7 @@ Measured on a laptop with Windows 11 26H2 at 1920×1200 and 125% scaling, one mi
 
 | | Taskbar Pulse | TrafficMonitor 1.86 Lite |
 | --- | --- | --- |
-| Download | **290 KB, one exe** | 1.92 MB exe |
+| Download | **300 KB, one exe** | 1.92 MB exe |
 | Private memory | **about 9 MB** | 12.0 MB |
 | CPU at 1 s | **about 0.4% of one core** | 0.63% |
 | CPU temperature | yes, no admin | plugin, needs admin |
@@ -55,7 +56,7 @@ Measured on a laptop with Windows 11 26H2 at 1920×1200 and 125% scaling, one mi
 ## Why Taskbar Pulse
 
 - **It lives in the taskbar.** Not a floating window, not a Store app, not another Task Manager. It uses the strip in front of the notification area and stays out of the way.
-- **It is one file.** 290 KB, no installer, no runtime, no admin rights. Copy it, run it, delete it.
+- **It is one file.** 300 KB, no installer, no runtime, no admin rights. Copy it, run it, delete it.
 - **It is measured, not claimed.** ~9 MB of RAM and ~0.4% of one core, with the numbers above.
 - **Its network meter does not inflate.** One routed interface, 64-bit counters, no summed filter drivers or virtual adapters.
 - **Nothing to trust.** No telemetry, no network connections, no background service.
@@ -104,7 +105,7 @@ Visual Studio with the C++ toolset and the Windows 11 SDK.
 .\build.ps1
 ```
 
-The output is `TaskbarPulse.exe` next to the script, linked against the static CRT so it has no runtime dependency.
+The output is `TaskbarPulse.exe` next to the script, linked against the static CRT so it has no runtime dependency. The script also runs the contrast regression test, so a change that drops accent text below 4.5:1 or an accent fill below 3:1 fails the build.
 
 Every push also builds the exe in GitHub Actions. Fork the repo, edit it, and download `TaskbarPulse-windows-x64` from the run's **Artifacts**; push a tag like `v1.0.0` and the workflow publishes it as a release.
 
