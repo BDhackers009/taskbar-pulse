@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <a href="../../actions/workflows/build.yml"><img src="https://github.com/BDhackers009/taskbar-pulse/actions/workflows/build.yml/badge.svg" alt="Build"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2011-0078D4" alt="Platform">
   <img src="https://img.shields.io/badge/C%2B%2B-20-00599C" alt="C++20">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
