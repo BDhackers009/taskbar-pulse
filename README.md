@@ -7,6 +7,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-Windows%2011-0078D4" alt="Platform">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C" alt="C++20">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
 </p>
 
@@ -18,6 +19,12 @@
 </p>
 
 ![Taskbar Pulse in the taskbar](docs/taskbar.png)
+
+## What is this?
+
+A taskbar widget for Windows 11 that shows CPU, GPU, memory, network throughput and CPU temperature in one small strip. It is a native **C++20** app built on the Win32 API, Direct2D and DirectWrite — no Electron, no .NET, no runtime.
+
+It was **vibecoded**: written with an AI assistant from a written spec, then reviewed, benchmarked and tested by hand. The numbers below are measurements from the running build.
 
 ## Features
 
@@ -96,6 +103,8 @@ Visual Studio with the C++ toolset and the Windows 11 SDK.
 
 The output is `TaskbarPulse.exe` next to the script, linked against the static CRT so it has no runtime dependency.
 
+Every push also builds the exe in GitHub Actions. Fork the repo, edit it, and download `TaskbarPulse-windows-x64` from the run's **Artifacts**; push a tag like `v1.0.0` and the workflow publishes it as a release.
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — use it, fork it, ship it, keep the copyright notice. See [LICENSE](LICENSE).
