@@ -63,6 +63,7 @@ using Microsoft::WRL::ComPtr;
 // Small helpers
 
 static constexpr wchar_t kAppName[] = L"Taskbar Pulse";
+static constexpr wchar_t kVersion[] = L"1.1";
 static constexpr wchar_t kWndClass[] = L"TaskbarPulse.Widget";
 
 static const UINT WM_APP_SAMPLE = WM_APP + 10;
@@ -1099,6 +1100,11 @@ bool Renderer::PaintSettings(HWND hwnd, int x, int y, const Theme& theme, const 
   target_->BeginDraw();
   target_->Clear(D2D1::ColorF(0, 0, 0, 0));
 
+  // Per-pixel hit testing skips fully transparent pixels. A near-invisible fill
+  // keeps the top drag band clickable right up to the window edge.
+  brush_->SetColor(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f / 255.0f));
+  target_->FillRectangle(D2D1::RectF(0.0f, 0.0f, (float)L.w, (float)L.h), brush_.Get());
+
   for (int i = 5; i >= 1; --i) {
     float spread = i * 1.4f * s;
     D2D1_ROUNDED_RECT glow{D2D1::RectF(body.left - spread, body.top - spread + 2.0f * s,
@@ -1262,8 +1268,8 @@ bool Renderer::PaintSettings(HWND hwnd, int x, int y, const Theme& theme, const 
              (float)L.exitBtn.bottom - 9.0f * s, (float)(L.exitBtn.right - L.exitBtn.left),
              theme.label);
   {
-    TextMetrics m = Measure(menu_.Get(), L"1.0");
-    DrawTextAt(menu_.Get(), L"1.0", (float)L.footer.right - m.width - 2.0f * s,
+    TextMetrics m = Measure(menu_.Get(), kVersion);
+    DrawTextAt(menu_.Get(), kVersion, (float)L.footer.right - m.width - 2.0f * s,
                (float)L.footer.bottom - 9.0f * s, m.width + 4.0f * s, theme.label);
   }
 
@@ -1818,11 +1824,21 @@ static bool TaskbarVisible(App& app, const RECT& rect) {
 static bool FullscreenOnTaskbarMonitor(App& app) {
   HWND fg = GetForegroundWindow();
   if (!fg || fg == app.hwnd || fg == app.taskbar) return false;
+  // A hidden window can still be "foreground" while an app launches. Treating
+  // its stale rectangle as fullscreen would hide the widget until focus moves.
+  if (!IsWindowVisible(fg)) return false;
   wchar_t cls[64] = {};
   GetClassNameW(fg, cls, 64);
-  if (!wcscmp(cls, L"Progman") || !wcscmp(cls, L"WorkerW") || !wcscmp(cls, L"Shell_TrayWnd") ||
-      !wcscmp(cls, L"Shell_SecondaryTrayWnd"))
-    return false;
+  // Shell surfaces sit over the taskbar during Start, Search and flyouts; they
+  // are not apps that should make the widget disappear.
+  static const wchar_t* kShellClasses[] = {
+      L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd",
+      L"ForegroundStaging", L"XamlExplorerHostIslandWindow",
+      L"TopLevelWindowForOverflowXamlIsland", L"Wnd_StartFeed",
+      L"Windows.UI.Core.CoreWindow"};
+  for (const wchar_t* shell : kShellClasses)
+    if (!wcscmp(cls, shell)) return false;
+  if (!wcsncmp(cls, L"DesktopFlyoutHostClass.", 23)) return false;
   DWORD cloaked = 0;
   if (SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return false;
   RECT wr{};
@@ -1835,42 +1851,15 @@ static bool FullscreenOnTaskbarMonitor(App& app) {
 }
 
 static bool TaskbarCoversWidget(App& app) {
-  if (!app.ow || !app.oh) return false;
+  if (!app.taskbar || !app.hwnd) return false;
   // While Start or Search is open the shell lifts the taskbar above every
-  // topmost window. Ask the window manager which window is on top of our centre
-  // point: the taskbar means we need to climb back once the shell lowers it.
-  POINT p{app.x + app.ow / 2, app.y + app.oh / 2};
-  HWND top = WindowFromPoint(p);
-  return top && GetAncestor(top, GA_ROOT) == app.taskbar;
-}
-
-static bool TaskbarObstructed(App& app, const RECT& taskbar, bool horizontal) {
-  // A fullscreen video window covers the whole strip but may never become the
-  // foreground window, so sample the taskbar itself: if no probe point resolves
-  // back to a taskbar window, something is covering it.
-  POINT probes[2];
-  if (horizontal) {
-    int y = (taskbar.top + taskbar.bottom) / 2;
-    int w = taskbar.right - taskbar.left;
-    probes[0] = POINT{taskbar.left + w * 35 / 100, y};
-    probes[1] = POINT{taskbar.left + w * 65 / 100, y};
-  } else {
-    int x = (taskbar.left + taskbar.right) / 2;
-    int h = taskbar.bottom - taskbar.top;
-    probes[0] = POINT{x, taskbar.top + h * 35 / 100};
-    probes[1] = POINT{x, taskbar.top + h * 65 / 100};
-  }
-  RECT self{app.x, app.y, app.x + app.ow, app.y + app.oh};
-  bool covered = false;
-  for (const POINT& p : probes) {
-    if (PtInRect(&self, p)) continue;
-    HWND top = WindowFromPoint(p);
-    if (!top) continue;
-    HWND root = GetAncestor(top, GA_ROOT);
-    if (root == app.taskbar) return false;
-    if (root != app.hwnd) covered = true;
-  }
-  return covered;
+  // topmost window. Walk the z-order above us (a server-side query) instead of
+  // WindowFromPoint, which sends a message to whatever is under the point and
+  // can hang the UI thread while an app is busy launching.
+  HWND h = GetWindow(app.hwnd, GW_HWNDPREV);
+  for (int guard = 0; h && guard < 256; ++guard, h = GetWindow(h, GW_HWNDPREV))
+    if (h == app.taskbar) return true;
+  return false;
 }
 
 static void ShowWidget(App& app, bool show) {
@@ -2039,7 +2028,7 @@ static void BuildSettingsLayout(App& app) {
   int contentW = right - x0;
 
   int y = L.shadow + titleH + P(2);
-  L.title = {L.shadow, L.shadow, w - L.shadow, L.shadow + titleH};
+  L.title = {0, 0, w, L.shadow + titleH};
   L.closeBtn = {right - btn, L.shadow + (titleH - btn) / 2, right,
                 L.shadow + (titleH - btn) / 2 + btn};
 
@@ -2431,6 +2420,10 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
       int s = app->settingsLayout.shadow;
       int x = GET_X_LPARAM(lParam) - r.left;
       int y = GET_Y_LPARAM(lParam) - r.top;
+      // A borderless window has no system title bar, so the whole top band —
+      // including the shadow margin — is the drag handle and must stay
+      // clickable instead of passing through to the window underneath.
+      if (y >= 0 && y < app->settingsLayout.title.bottom) return HTCLIENT;
       if (x < s || y < s || x >= (r.right - r.left) - s || y >= (r.bottom - r.top) - s)
         return HTTRANSPARENT;
       return HTCLIENT;
@@ -2585,7 +2578,7 @@ static void UpdateTrayTip(App& app) {
     swprintf_s(netLine, L"\nNET \x2193 %ls/s  \x2191 %ls/s", down, up);
   }
   wchar_t line[192];
-  swprintf_s(line, L"Taskbar Pulse 1.0\nCPU %d%%%ls  GPU %ls  RAM %d%%%ls",
+  swprintf_s(line, L"Taskbar Pulse %ls\nCPU %d%%%ls  GPU %ls  RAM %d%%%ls", kVersion,
              (int)std::lround(app.sample.cpu), temps ? tempSuffix(app.sample.cpuTemp).c_str() : L"",
              gpuText, (int)std::lround(app.sample.ram), netLine);
   if (app.trayTip == line) return;
@@ -2944,8 +2937,8 @@ static void UpdatePosition(App& app, bool force) {
   app.ow = L.w;
   app.oh = L.h;
 
-  bool taskbarReady = TaskbarVisible(app, taskbarRect) && !FullscreenOnTaskbarMonitor(app) &&
-                      !TaskbarObstructed(app, taskbarRect, horizontal);
+  bool taskbarReady = TaskbarVisible(app, taskbarRect) && IsWindowVisible(app.taskbar) &&
+                      !FullscreenOnTaskbarMonitor(app);
   bool show = taskbarReady && app.hasSample;
   app.samplingActive.store(taskbarReady);
 
