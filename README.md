@@ -66,7 +66,7 @@ Download `TaskbarPulse.exe` from the [latest release](../../releases/latest) and
 
 On first launch it adds itself to the current user's Run key; turn **Start with Windows** off in Settings to remove it. Settings live in `%APPDATA%\TaskbarPulse\settings.ini`.
 
-Windows may warn about an unsigned exe from a new project. Choose **More info → Run anyway**, or build it yourself below.
+Windows may warn that the publisher could not be verified, because the exe is unsigned. The release notes list its SHA-256; compare it with `Get-FileHash .\TaskbarPulse.exe -Algorithm SHA256`. If Windows shows the "Open File" prompt, choose **More info → Run anyway**, or clear the download flag first with `Unblock-File .\TaskbarPulse.exe`.
 
 ## Usage
 

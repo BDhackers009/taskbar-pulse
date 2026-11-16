@@ -24,7 +24,9 @@ jobs:
         shell: pwsh
         run: |
           $exe = Get-Item TaskbarPulse.exe
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
           "Built {0} ({1:N0} bytes)" -f $exe.Name, $exe.Length
+          "SHA-256: $hash"
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
@@ -49,4 +51,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" TaskbarPulse.exe --title "Taskbar Pulse $GITHUB_REF_NAME" --notes "Built from $GITHUB_SHA"
+        run: |
+          HASH=$(sha256sum TaskbarPulse.exe | cut -d' ' -f1)
+          printf -v NOTES 'Built from %s\n\nSHA-256: %s\n' "$GITHUB_SHA" "$HASH"
+          gh release create "$GITHUB_REF_NAME" TaskbarPulse.exe \
+            --title "Taskbar Pulse $GITHUB_REF_NAME" \
+            --notes "$NOTES"
