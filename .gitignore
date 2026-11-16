@@ -1,0 +1,16 @@
+# Build output
+build/
+*.exe
+*.obj
+*.res
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Visual Studio
+.vs/
+*.user
+
+# Debug logs
+*.log
