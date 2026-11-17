@@ -64,7 +64,7 @@ using Microsoft::WRL::ComPtr;
 // Small helpers
 
 static constexpr wchar_t kAppName[] = L"Taskbar Pulse";
-static constexpr wchar_t kVersion[] = L"1.1.2";
+static constexpr wchar_t kVersion[] = L"1.1.3";
 static constexpr wchar_t kWndClass[] = L"TaskbarPulse.Widget";
 
 static const UINT WM_APP_SAMPLE = WM_APP + 10;
@@ -664,6 +664,17 @@ class Sampler {
     if (status != ERROR_SUCCESS) return -1.0f;
 
     auto* items = (PDH_FMT_COUNTERVALUE_ITEM_W*)thermalBuf_.data();
+    if (g_debug && !loggedThermalZones_) {
+      for (DWORD i = 0; i < count; ++i) {
+        if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
+            items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+          continue;
+        const double kelvin = thermalTenths_ ? items[i].FmtValue.doubleValue / 10.0
+                                             : items[i].FmtValue.doubleValue;
+        Log(L"thermal zone %ls = %.1f C", items[i].szName, kelvin - 273.15);
+      }
+      loggedThermalZones_ = true;
+    }
     double warmest = -1.0;
     for (DWORD i = 0; i < count; ++i) {
       if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
@@ -685,7 +696,7 @@ class Sampler {
     if (!StartGpu()) return -1.0f;
     if (PdhCollectQueryData(query_) != ERROR_SUCCESS) {
       CloseGpu();
-      nextGpuRetry_ = GetTickCount64() + 30000;
+      nextGpuRetry_ = GetTickCount64() + 1000;  // transient; retry next sample
       return -1.0f;
     }
 
@@ -782,6 +793,7 @@ class Sampler {
   bool thermalTenths_ = true;
   std::vector<BYTE> buffer_;
   std::vector<BYTE> thermalBuf_;
+  bool loggedThermalZones_ = false;
   ULONGLONG nextGpuRetry_ = 0;
   ULONGLONG nextTempRetry_ = 0;
   bool cpuPrimed_ = false;
@@ -1203,7 +1215,7 @@ bool Renderer::PaintSettings(HWND hwnd, int x, int y, const Theme& theme, const 
     target_->DrawEllipse(dot, brush_.Get(), std::max(1.0f, 1.1f * s));
   };
   switchRow(L.barsRow, L.barsSwitch, L"Show load bars", view.bars);
-  switchRow(L.tempRow, L.tempSwitch, L"Show CPU temperature", view.temps);
+  switchRow(L.tempRow, L.tempSwitch, L"Show thermal zone temp", view.temps);
   switchRow(L.lockRow, L.lockSwitch, L"Lock position", view.locked);
   switchRow(L.borderRow, L.borderSwitch, L"Borderless", view.borderless);
   switchRow(L.autoRow, L.autoSwitch, L"Start with Windows", view.autostart);
@@ -1377,6 +1389,10 @@ struct App {
   HWND settingsPrevious = nullptr;
 
   float gpuShown = -1.0f;
+  float gpuRaw = -1.0f;
+  int gpuMisses = 0;
+  int gpuPending = -999;
+  int gpuPendingCount = 0;
   std::atomic<bool> samplingActive{true};
   int lastPaintCpu = -999, lastPaintGpu = -999, lastPaintRam = -999;
   int lastPaintAlert[3] = {-1, -1, -1};
@@ -1411,9 +1427,22 @@ struct App {
 
 static App g_app;
 
+static bool IsHardwareGpu(const App& app, ULONGLONG luid);
+
 static float DisplayGpu(const App& app) {
   if (app.sample.gpu < 0.0f) return -1.0f;
-  if (app.settings.gpuLuid == 0) return app.sample.gpu;
+  if (app.settings.gpuLuid == 0) {
+    // Ignore WARP / Basic Render Driver instances. They can spike under load
+    // with no physical GPU behind them, and the settings list already hides them.
+    float best = -1.0f;
+    for (int i = 0; i < app.sample.gpuCount; ++i)
+      if (IsHardwareGpu(app, app.sample.gpus[i].luid))
+        best = std::max(best, app.sample.gpus[i].util);
+    if (best >= 0.0f) return best;
+    // A hardware adapter exists but has no counter instances: it is idle.
+    if (!app.adapters.empty()) return 0.0f;
+    return app.sample.gpu;  // adapter list not loaded yet
+  }
   for (int i = 0; i < app.sample.gpuCount; ++i)
     if (app.sample.gpus[i].luid == app.settings.gpuLuid) return app.sample.gpus[i].util;
   // A pinned adapter that is present but idle has no counter instances. Report
@@ -1421,6 +1450,67 @@ static float DisplayGpu(const App& app) {
   for (const AdapterInfo& adapter : app.adapters)
     if (adapter.luid == app.settings.gpuLuid) return 0.0f;
   return app.sample.gpu;  // the selected adapter is gone (disabled): fall back
+}
+
+static bool IsHardwareGpu(const App& app, ULONGLONG luid) {
+  for (const AdapterInfo& adapter : app.adapters)
+    if (adapter.luid == luid) return !adapter.software;
+  return false;
+}
+
+// A GPU percentage is a duty cycle, so idle readings wander across the rounding
+// boundary and a 0/1% change can repaint the bar every sample. Keep the shown
+// value stable: a one-point change must persist for three samples, a larger
+// change goes through at once, and brief counter misses hold the last value.
+static void UpdateGpuSample(App& app, bool reset) {
+  const float raw = DisplayGpu(app);
+  app.gpuRaw = raw;
+  Log(L"gpu raw=%.2f shown=%.2f", raw, app.gpuShown);
+  if (reset) {
+    app.gpuShown = raw;
+    app.gpuMisses = 0;
+    app.gpuPending = -999;
+    app.gpuPendingCount = 0;
+    return;
+  }
+  if (raw < 0.0f) {
+    if (app.gpuShown >= 0.0f && ++app.gpuMisses < 3) return;
+    app.gpuShown = -1.0f;
+    app.gpuMisses = 0;
+    app.gpuPending = -999;
+    app.gpuPendingCount = 0;
+    return;
+  }
+  app.gpuMisses = 0;
+  if (app.gpuShown < 0.0f) {
+    app.gpuShown = raw;
+    app.gpuPending = (int)std::lround(raw);
+    app.gpuPendingCount = 1;
+    return;
+  }
+  const int shown = (int)std::lround(app.gpuShown);
+  const int candidate = (int)std::lround(raw);
+  if (candidate == shown) {
+    app.gpuPending = candidate;
+    app.gpuPendingCount = 0;
+    return;
+  }
+  if (std::abs(candidate - shown) == 1) {
+    if (app.gpuPending == candidate)
+      ++app.gpuPendingCount;
+    else {
+      app.gpuPending = candidate;
+      app.gpuPendingCount = 1;
+    }
+    if (app.gpuPendingCount >= 3) {
+      app.gpuShown = raw;
+      app.gpuPendingCount = 0;
+    }
+    return;
+  }
+  app.gpuShown = raw;
+  app.gpuPending = candidate;
+  app.gpuPendingCount = 0;
 }
 
 // Layout + painting
@@ -1488,7 +1578,7 @@ static void RebuildLayout(App& app) {
 }
 
 static void UpdateAlerts(App& app) {
-  const float pct[3] = {app.sample.cpu, app.gpuShown, app.sample.ram};
+  const float pct[3] = {app.sample.cpu, app.gpuRaw, app.sample.ram};
   const ULONGLONG now = GetTickCount64();
   for (int i = 0; i < 3; ++i) {
     App::MetricAlert& a = app.alerts[i];
@@ -2299,7 +2389,7 @@ static void CommitSettings(App& app, bool layoutChanged, bool restartSampler) {
     RebuildLayout(app);
     UpdatePosition(app, true);
   }
-  app.gpuShown = DisplayGpu(app);
+  UpdateGpuSample(app, true);
   UpdateAlerts(app);
   BuildSettingsView(app);
   PaintWidget(app);
@@ -2723,7 +2813,7 @@ static void ApplySettings(App& app, bool save) {
   app.laidOut = false;
   RebuildLayout(app);
   StartSampler(app);
-  app.gpuShown = DisplayGpu(app);
+  UpdateGpuSample(app, true);
   UpdatePosition(app, true);
   if (app.settingsOpen) PaintSettingsNow(app);
 }
@@ -3191,7 +3281,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
       s = app->pending;
       LeaveCriticalSection(&app->sampleLock);
       app->sample = s;
-      app->gpuShown = DisplayGpu(*app);
+      UpdateGpuSample(*app, false);
       UpdateAlerts(*app);
       app->hasSample = true;
 

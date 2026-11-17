@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.3
+
+- Settings now labels the temperature as the thermal zone. The README explains that it is the warmest ACPI zone, not a core sensor, and records the verified laptop (Acer Predator PHN16-72, one zone `\_tz.tz00`); an offset against HWiNFO or Core Temp was not measured.
+- The GPU readout ignores WARP/Basic Render Driver instances, holds the last good value through brief counter misses, and requires a one-point change to persist for three samples before updating. This removes the 0/1% flicker reported on a 120 Hz setup.
+- A failed GPU counter collect now retries after 1 s instead of 30 s.
+- Debug logs list the ACPI thermal zones so OEM reports are easier.
+- Settings footer and tray tooltip report 1.1.3; the exe metadata is 1.1.3.0.
+
 ## 1.1.2
 
 - Accent-colored text and check marks now meet 4.5:1 against the menu, including the hovered row. The accent fills used by switches, load bars and the keyboard focus ring meet 3:1. Before, the fixed tint on dark failed for black and near-black accents, and the raw accent on light failed for bright ones.
