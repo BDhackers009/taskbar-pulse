@@ -83,7 +83,7 @@ GPU usage comes from the WDDM counters. Some VMs and RDP sessions do not expose 
 
 - Only the primary taskbar is supported.
 - While Start or Search is open, Windows puts the taskbar above every window, so the widget is covered.
-- The temperature is the warmest ACPI thermal zone, not a core sensor. Accuracy and update rate vary by OEM. Verified on an Acer Predator PHN16-72; an offset against HWiNFO or Core Temp was not measured.
+- The temperature is the warmest ACPI thermal zone, not a core sensor. Accuracy and update rate vary by OEM. Verified on an Acer Predator PHN16-72, which exposed one zone (`\_TZ.TZ00`); an offset against HWiNFO or Core Temp was not measured.
 - The network column follows the default-route interface only; a second NIC or a host-only VM network is not added in.
 
 ## Build

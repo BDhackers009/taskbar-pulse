@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.4
+
+- Fixed a render-surface failure path that could leave a null Direct2D target and crash the next paint.
+- Throttled the full-window taskbar coverage scan to once per second and foreground changes. DWM is now asked only about windows that actually cover the monitor.
+- GPU readout now uses a hardware-only LUID set. WARP / Basic Render Driver is never shown as GPU load, a WARP-only VM shows a dash, and hot-plug or duplicate hardware LUIDs are included.
+- GPU alerts use the stabilized display value, so the number and colour agree, and a brief counter miss no longer clears the alert early.
+- A failed GPU counter collect retries on the next sample and reopens the query after three misses; the first collect after reopening the query is discarded to avoid a fake 0 or 100% spike.
+- USB, dock and eGPU arrivals trigger an adapter rescan, coalesced so a burst of device events does not enumerate DXGI repeatedly.
+- Shutdown clears the sampler target before windows are destroyed and, on a clean stop, releases the screen DC and event handles.
+- `WM_SETTINGCHANGE` no longer dereferences `lParam`, which can point into another process.
+- Settings opens without `AttachThreadInput`, so a slow foreground app cannot block it.
+- Dependent DLLs load from System32, and the autostart path is no longer capped at `MAX_PATH`.
+- Debug logging lists ACPI thermal zones even when temperatures are off.
+- Settings footer and tray tooltip report 1.1.4; the exe metadata is 1.1.4.0.
+
 ## 1.1.3
 
 - Settings now labels the temperature as the thermal zone. The README explains that it is the warmest ACPI zone, not a core sensor, and records the verified laptop (Acer Predator PHN16-72, one zone `\_tz.tz00`); an offset against HWiNFO or Core Temp was not measured.

@@ -31,6 +31,7 @@
 #include <pdhmsg.h>
 #include <dxgi1_2.h>
 #include <dwmapi.h>
+#include <dbt.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
@@ -64,7 +65,7 @@ using Microsoft::WRL::ComPtr;
 // Small helpers
 
 static constexpr wchar_t kAppName[] = L"Taskbar Pulse";
-static constexpr wchar_t kVersion[] = L"1.1.3";
+static constexpr wchar_t kVersion[] = L"1.1.4";
 static constexpr wchar_t kWndClass[] = L"TaskbarPulse.Widget";
 
 static const UINT WM_APP_SAMPLE = WM_APP + 10;
@@ -282,9 +283,16 @@ static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\
 static const wchar_t* kRunValue = L"TaskbarPulse";
 
 static std::wstring ExePath() {
-  wchar_t path[MAX_PATH];
-  DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
-  return std::wstring(path, n);
+  std::wstring path(MAX_PATH, L'\0');
+  for (;;) {
+    const DWORD n = GetModuleFileNameW(nullptr, path.data(), (DWORD)path.size());
+    if (n == 0) return L"";
+    if (n < path.size()) {
+      path.resize(n);
+      return path;
+    }
+    path.resize(path.size() * 2);
+  }
 }
 
 static bool AutostartEnabled() {
@@ -302,7 +310,12 @@ static void SetAutostart(bool on) {
   if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
     return;
   if (on) {
-    std::wstring cmd = L"\"" + ExePath() + L"\"";
+    const std::wstring exe = ExePath();
+    if (exe.empty()) {
+      RegCloseKey(key);
+      return;
+    }
+    std::wstring cmd = L"\"" + exe + L"\"";
     RegSetValueExW(key, kRunValue, 0, REG_SZ, (const BYTE*)cmd.c_str(),
                    (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
   } else {
@@ -406,26 +419,49 @@ struct Sample {
 struct AdapterInfo {
   ULONGLONG luid = 0;
   std::wstring name;
+  unsigned vendorId = 0;
+  unsigned deviceId = 0;
+  unsigned subSysId = 0;
   bool software = false;
 };
 
-static void LoadAdapters(std::vector<AdapterInfo>& out) {
+// The same physical adapter can be enumerated twice with different LUIDs. DXGI
+// gives both copies the same description and PCI identity, so use the whole
+// identity rather than the name alone.
+static bool SameAdapter(const AdapterInfo& a, const AdapterInfo& b) {
+  return a.name == b.name && a.vendorId == b.vendorId && a.deviceId == b.deviceId &&
+         a.subSysId == b.subSysId;
+}
+
+static bool LoadAdapters(std::vector<AdapterInfo>& out) {
   ComPtr<IDXGIFactory1> factory;
-  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)factory.GetAddressOf()))) return;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)factory.GetAddressOf())))
+    return false;
   for (UINT i = 0;; ++i) {
     ComPtr<IDXGIAdapter1> adapter;
-    if (factory->EnumAdapters1(i, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) break;
+    const HRESULT hr = factory->EnumAdapters1(i, adapter.GetAddressOf());
+    if (hr == DXGI_ERROR_NOT_FOUND) break;
+    if (FAILED(hr)) {
+      // A partial list is worse than none: it can hide a real GPU or keep WARP
+      // in it. Treat it as a failed scan so the caller retries.
+      out.clear();
+      return false;
+    }
     DXGI_ADAPTER_DESC1 desc{};
     if (SUCCEEDED(adapter->GetDesc1(&desc))) {
       AdapterInfo info;
       info.luid = ((ULONGLONG)(DWORD)desc.AdapterLuid.HighPart << 32) | desc.AdapterLuid.LowPart;
       info.name = desc.Description;
+      info.vendorId = desc.VendorId;
+      info.deviceId = desc.DeviceId;
+      info.subSysId = desc.SubSysId;
       info.software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
       Log(L"adapter: %ls luid=%llx flags=%u vram=%lluMB", info.name.c_str(), info.luid,
           desc.Flags, desc.DedicatedVideoMemory / (1024 * 1024));
       out.push_back(info);
     }
   }
+  return true;
 }
 
 static ULONGLONG InternetRouteLuid() {
@@ -477,7 +513,7 @@ class Sampler {
     }
 
     s.gpu = SampleGpu(s.gpus, &s.gpuCount);
-    if (readTemp) {
+    if (readTemp || g_debug) {
       s.cpuTemp = ReadThermal();
     } else {
       CloseTemp();
@@ -599,6 +635,8 @@ class Sampler {
       return false;
     }
     PdhCollectQueryData(query_);  // baseline sample; values are valid after the next collect
+    gpuBaselineTick_ = GetTickCount64();
+    gpuCollectMisses_ = 0;
     return true;
   }
 
@@ -665,6 +703,7 @@ class Sampler {
 
     auto* items = (PDH_FMT_COUNTERVALUE_ITEM_W*)thermalBuf_.data();
     if (g_debug && !loggedThermalZones_) {
+      bool loggedAny = false;
       for (DWORD i = 0; i < count; ++i) {
         if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
             items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
@@ -672,8 +711,9 @@ class Sampler {
         const double kelvin = thermalTenths_ ? items[i].FmtValue.doubleValue / 10.0
                                              : items[i].FmtValue.doubleValue;
         Log(L"thermal zone %ls = %.1f C", items[i].szName, kelvin - 273.15);
+        loggedAny = true;
       }
-      loggedThermalZones_ = true;
+      if (loggedAny) loggedThermalZones_ = true;
     }
     double warmest = -1.0;
     for (DWORD i = 0; i < count; ++i) {
@@ -694,11 +734,21 @@ class Sampler {
   float SampleGpu(Sample::GpuUtil* out, int* outCount) {
     *outCount = 0;
     if (!StartGpu()) return -1.0f;
-    if (PdhCollectQueryData(query_) != ERROR_SUCCESS) {
-      CloseGpu();
-      nextGpuRetry_ = GetTickCount64() + 1000;  // transient; retry next sample
+    // A query opened in this call has only the baseline sample. Collecting again
+    // now would divide by a near-zero interval and fake 0 or 100%.
+    if (GetTickCount64() - gpuBaselineTick_ < 250) return -1.0f;
+    auto fail = [&]() -> float {
+      // A single miss is usually transient: keep the query and retry next
+      // sample. Repeated misses mean the counter died, so back off instead of
+      // reopening the query every other sample.
+      if (++gpuCollectMisses_ >= 3) {
+        CloseGpu();
+        nextGpuRetry_ = GetTickCount64() + 5000;
+        gpuCollectMisses_ = 0;
+      }
       return -1.0f;
-    }
+    };
+    if (PdhCollectQueryData(query_) != ERROR_SUCCESS) return fail();
 
     DWORD size = 0, count = 0;
     PDH_STATUS status = PdhGetFormattedCounterArrayW(counter_, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, &size, &count, nullptr);
@@ -715,8 +765,9 @@ class Sampler {
     }
     if (status != ERROR_SUCCESS) {
       buffer_.clear();
-      return -1.0f;
+      return fail();
     }
+    gpuCollectMisses_ = 0;
 
     struct Engine {
       ULONGLONG luid;
@@ -794,6 +845,8 @@ class Sampler {
   std::vector<BYTE> buffer_;
   std::vector<BYTE> thermalBuf_;
   bool loggedThermalZones_ = false;
+  ULONGLONG gpuBaselineTick_ = 0;
+  int gpuCollectMisses_ = 0;
   ULONGLONG nextGpuRetry_ = 0;
   ULONGLONG nextTempRetry_ = 0;
   bool cpuPrimed_ = false;
@@ -928,7 +981,7 @@ class Renderer {
 
  private:
   bool EnsureSurface(int w, int h) {
-    if (w == width_ && h == height_ && memoryDc_) return true;
+    if (w == width_ && h == height_ && memoryDc_ && target_ && brush_) return true;
     ReleaseSurface();
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -938,26 +991,48 @@ class Renderer {
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
     bitmap_ = CreateDIBSection(screen_, &bmi, DIB_RGB_COLORS, &bits_, nullptr, 0);
-    if (!bitmap_) return false;
+    if (!bitmap_) {
+      ReleaseSurface();
+      return false;
+    }
     memoryDc_ = CreateCompatibleDC(screen_);
-    if (!memoryDc_) return false;
-    SelectObject(memoryDc_, bitmap_);
-    width_ = w;
-    height_ = h;
-
+    if (!memoryDc_) {
+      ReleaseSurface();
+      return false;
+    }
+    oldBitmap_ = SelectObject(memoryDc_, bitmap_);
+    if (!oldBitmap_ || oldBitmap_ == HGDI_ERROR) {
+      oldBitmap_ = nullptr;
+      ReleaseSurface();
+      return false;
+    }
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_SOFTWARE,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
-    if (FAILED(factory_->CreateDCRenderTarget(&props, target_.ReleaseAndGetAddressOf()))) return false;
+    if (FAILED(factory_->CreateDCRenderTarget(&props, target_.ReleaseAndGetAddressOf())) || !target_) {
+      ReleaseSurface();
+      return false;
+    }
     target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     target_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    target_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), brush_.ReleaseAndGetAddressOf());
-    return brush_ != nullptr;
+    if (FAILED(target_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White),
+                                              brush_.ReleaseAndGetAddressOf())) ||
+        !brush_) {
+      ReleaseSurface();
+      return false;
+    }
+    width_ = w;
+    height_ = h;
+    return true;
   }
 
   void ReleaseSurface() {
     target_.Reset();
     brush_.Reset();
+    if (memoryDc_ && oldBitmap_) {
+      SelectObject(memoryDc_, oldBitmap_);
+      oldBitmap_ = nullptr;
+    }
     if (memoryDc_) {
       DeleteDC(memoryDc_);
       memoryDc_ = nullptr;
@@ -998,6 +1073,7 @@ class Renderer {
   HDC screen_ = nullptr;
   HDC memoryDc_ = nullptr;
   HBITMAP bitmap_ = nullptr;
+  HGDIOBJ oldBitmap_ = nullptr;
   void* bits_ = nullptr;
   int width_ = 0, height_ = 0;
   float scale_ = 1.0f, labelPx_ = 0, valuePx_ = 0;
@@ -1389,10 +1465,16 @@ struct App {
   HWND settingsPrevious = nullptr;
 
   float gpuShown = -1.0f;
-  float gpuRaw = -1.0f;
   int gpuMisses = 0;
   int gpuPending = -999;
   int gpuPendingCount = 0;
+  std::vector<AdapterInfo> hardwareGpuAdapters;
+  bool hardwareScanOk = false;
+  ULONGLONG coverScanTick = 0;
+  HWND coverScanForeground = nullptr;
+  bool coverScanCovered = false;
+  ULONGLONG deviceScanTick = 0;
+  bool deviceScanPending = false;
   std::atomic<bool> samplingActive{true};
   int lastPaintCpu = -999, lastPaintGpu = -999, lastPaintRam = -999;
   int lastPaintAlert[3] = {-1, -1, -1};
@@ -1427,35 +1509,47 @@ struct App {
 
 static App g_app;
 
-static bool IsHardwareGpu(const App& app, ULONGLONG luid);
+static bool IsHardwareGpu(const App& app, ULONGLONG luid) {
+  for (const AdapterInfo& hardware : app.hardwareGpuAdapters)
+    if (hardware.luid == luid) return true;
+  return false;
+}
+
+static float HardwareGpuMax(const App& app) {
+  float best = -1.0f;
+  for (int i = 0; i < app.sample.gpuCount; ++i)
+    if (IsHardwareGpu(app, app.sample.gpus[i].luid))
+      best = std::max(best, app.sample.gpus[i].util);
+  return best;
+}
 
 static float DisplayGpu(const App& app) {
   if (app.sample.gpu < 0.0f) return -1.0f;
-  if (app.settings.gpuLuid == 0) {
-    // Ignore WARP / Basic Render Driver instances. They can spike under load
-    // with no physical GPU behind them, and the settings list already hides them.
-    float best = -1.0f;
+  // Without a hardware list the raw sample can be WARP, which must never appear
+  // as GPU load. Show a dash and let the timer retry the scan.
+  if (!app.hardwareScanOk) return -1.0f;
+  if (app.settings.gpuLuid != 0) {
     for (int i = 0; i < app.sample.gpuCount; ++i)
-      if (IsHardwareGpu(app, app.sample.gpus[i].luid))
-        best = std::max(best, app.sample.gpus[i].util);
-    if (best >= 0.0f) return best;
-    // A hardware adapter exists but has no counter instances: it is idle.
-    if (!app.adapters.empty()) return 0.0f;
-    return app.sample.gpu;  // adapter list not loaded yet
+      if (app.sample.gpus[i].luid == app.settings.gpuLuid) return app.sample.gpus[i].util;
+    // The same physical adapter can be enumerated under sibling LUIDs. If the
+    // pinned LUID has no counters, accept a sample from the same adapter.
+    for (const AdapterInfo& pinned : app.hardwareGpuAdapters) {
+      if (pinned.luid != app.settings.gpuLuid) continue;
+      for (int i = 0; i < app.sample.gpuCount; ++i) {
+        for (const AdapterInfo& hardware : app.hardwareGpuAdapters) {
+          if (hardware.luid == app.sample.gpus[i].luid && SameAdapter(hardware, pinned))
+            return app.sample.gpus[i].util;
+        }
+      }
+      return 0.0f;  // pinned adapter is present but idle
+    }
+    // The pinned adapter is gone: fall through to the automatic hardware max.
   }
-  for (int i = 0; i < app.sample.gpuCount; ++i)
-    if (app.sample.gpus[i].luid == app.settings.gpuLuid) return app.sample.gpus[i].util;
-  // A pinned adapter that is present but idle has no counter instances. Report
-  // zero rather than silently showing a different GPU's load.
-  for (const AdapterInfo& adapter : app.adapters)
-    if (adapter.luid == app.settings.gpuLuid) return 0.0f;
-  return app.sample.gpu;  // the selected adapter is gone (disabled): fall back
-}
-
-static bool IsHardwareGpu(const App& app, ULONGLONG luid) {
-  for (const AdapterInfo& adapter : app.adapters)
-    if (adapter.luid == luid) return !adapter.software;
-  return false;
+  float best = HardwareGpuMax(app);
+  if (best >= 0.0f) return best;
+  // A hardware adapter exists but has no counter instances: it is idle.
+  if (!app.hardwareGpuAdapters.empty()) return 0.0f;
+  return -1.0f;  // no hardware GPU, for example a WARP-only VM
 }
 
 // A GPU percentage is a duty cycle, so idle readings wander across the rounding
@@ -1464,8 +1558,6 @@ static bool IsHardwareGpu(const App& app, ULONGLONG luid) {
 // change goes through at once, and brief counter misses hold the last value.
 static void UpdateGpuSample(App& app, bool reset) {
   const float raw = DisplayGpu(app);
-  app.gpuRaw = raw;
-  Log(L"gpu raw=%.2f shown=%.2f", raw, app.gpuShown);
   if (reset) {
     app.gpuShown = raw;
     app.gpuMisses = 0;
@@ -1578,7 +1670,11 @@ static void RebuildLayout(App& app) {
 }
 
 static void UpdateAlerts(App& app) {
-  const float pct[3] = {app.sample.cpu, app.gpuRaw, app.sample.ram};
+  // GPU uses the stabilized, rounded value the widget paints, so its colour and
+  // number agree. CPU and RAM keep their raw thresholds.
+  const float pct[3] = {app.sample.cpu,
+                        app.gpuShown < 0.0f ? -1.0f : (float)std::lround(app.gpuShown),
+                        app.sample.ram};
   const ULONGLONG now = GetTickCount64();
   for (int i = 0; i < 3; ++i) {
     App::MetricAlert& a = app.alerts[i];
@@ -1613,8 +1709,18 @@ static void UpdateAlerts(App& app) {
 static void PaintWidget(App& app) {
   if (!app.hwnd || !app.laidOut) return;
   const int alert[3] = {app.alerts[0].level, app.alerts[1].level, app.alerts[2].level};
-  app.renderer.Paint(app.hwnd, app.x, app.y, app.layout, app.theme, app.hover, app.sample,
-                     app.gpuShown, alert);
+  if (!app.renderer.Paint(app.hwnd, app.x, app.y, app.layout, app.theme, app.hover, app.sample,
+                          app.gpuShown, alert)) {
+    // Force the next sample to try again instead of trusting stale lastPaint values.
+    app.lastPaintCpu = -999;
+    app.lastPaintGpu = -999;
+    app.lastPaintRam = -999;
+    for (int i = 0; i < 3; ++i) app.lastPaintAlert[i] = -1;
+    app.lastPaintCpuTemp = -999;
+    app.lastNetDown[0] = 0;
+    app.lastNetUp[0] = 0;
+    return;
+  }
   app.lastPaintCpu = (int)std::lround(app.sample.cpu);
   app.lastPaintGpu = app.gpuShown < 0 ? -1 : (int)std::lround(app.gpuShown);
   app.lastPaintRam = (int)std::lround(app.sample.ram);
@@ -1828,11 +1934,11 @@ bool Renderer::PaintMenu(HWND hwnd, int x, int y, const Theme& theme,
       ComPtr<ID2D1GeometrySink> sink;
       if (SUCCEEDED(factory_->CreatePathGeometry(check.GetAddressOf())) &&
           SUCCEEDED(check->Open(sink.GetAddressOf()))) {
-        const float x = body.left + 13.0f * s;
         const float cy = top + itemH * 0.5f;
-        sink->BeginFigure(D2D1::Point2F(x, cy + 0.5f * s), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddLine(D2D1::Point2F(x + 3.4f * s, cy + 3.3f * s));
-        sink->AddLine(D2D1::Point2F(x + 9.4f * s, cy - 3.9f * s));
+        const float checkX = body.left + 13.0f * s;
+        sink->BeginFigure(D2D1::Point2F(checkX, cy + 0.5f * s), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(D2D1::Point2F(checkX + 3.4f * s, cy + 3.3f * s));
+        sink->AddLine(D2D1::Point2F(checkX + 9.4f * s, cy - 3.9f * s));
         sink->EndFigure(D2D1_FIGURE_END_OPEN);
         sink->Close();
         brush_->SetColor(theme.accentText);
@@ -1880,6 +1986,7 @@ static ULONGLONG g_geomLastPost = 0;
 
 static void CALLBACK GeometryEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG idObject, LONG,
                                        DWORD, DWORD) {
+  (void)event;
   if (idObject != OBJID_WINDOW) return;
   if (hwnd != g_geomTaskbar && hwnd != g_geomTray) return;
   ULONGLONG now = GetTickCount64();
@@ -1971,15 +2078,19 @@ static bool FullscreenOnTaskbarMonitor(App& app) {
   for (const wchar_t* shell : kShellClasses)
     if (!wcscmp(cls, shell)) return false;
   if (!wcsncmp(cls, L"DesktopFlyoutHostClass.", 23)) return false;
-  DWORD cloaked = 0;
-  if (SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return false;
   RECT wr{};
   if (!GetWindowRect(fg, &wr)) return false;
   MONITORINFO mi{};
   mi.cbSize = sizeof(mi);
   if (!GetMonitorInfoW(MonitorFromWindow(app.taskbar, MONITOR_DEFAULTTONEAREST), &mi)) return false;
   const RECT& m = mi.rcMonitor;
-  return wr.left <= m.left && wr.top <= m.top && wr.right >= m.right && wr.bottom >= m.bottom;
+  if (wr.left > m.left || wr.top > m.top || wr.right < m.right || wr.bottom < m.bottom) return false;
+  // Only ask DWM about a window that already covers the monitor. The call is a
+  // synchronous round trip, so keep it off the common 250 ms path.
+  DWORD cloaked = 0;
+  if (SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+    return false;
+  return true;
 }
 
 static bool TaskbarCoversWidget(App& app) {
@@ -2021,17 +2132,18 @@ static BOOL CALLBACK CoverProc(HWND hwnd, LPARAM param) {
   for (const wchar_t* shell : kShellClasses)
     if (!wcscmp(cls, shell)) return TRUE;
   if (!wcsncmp(cls, L"DesktopFlyoutHostClass.", 23)) return TRUE;
-  DWORD cloaked = 0;
-  if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
-    return TRUE;
   RECT wr{};
   if (!GetWindowRect(hwnd, &wr)) return TRUE;
   const RECT& m = s->monitor;
-  if (wr.left <= m.left && wr.top <= m.top && wr.right >= m.right && wr.bottom >= m.bottom) {
-    s->covered = true;
-    return FALSE;
-  }
-  return TRUE;
+  if (!(wr.left <= m.left && wr.top <= m.top && wr.right >= m.right && wr.bottom >= m.bottom))
+    return TRUE;
+  // Only ask DWM about windows that already cover the monitor. The call is a
+  // synchronous round trip, so keeping it off the common path matters.
+  DWORD cloaked = 0;
+  if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+    return TRUE;
+  s->covered = true;
+  return FALSE;
 }
 
 static bool TaskbarCoveredByFullscreen(App& app) {
@@ -2128,9 +2240,13 @@ static void StopSampler(App& app) {
   if (WaitForSingleObject(app.thread, 10000) == WAIT_OBJECT_0) {
     CloseHandle(app.thread);
     app.thread = nullptr;
-  } else {
-    Log(L"sampler did not stop in time");
+    return;
   }
+  // The process is exiting and the worker is stuck in a driver or PDH call.
+  // Waiting forever would hang the exit, and returning would let the worker
+  // touch app state after static teardown. End the process instead.
+  Log(L"sampler did not stop in time");
+  ExitProcess(1);
 }
 
 // Settings window
@@ -2138,10 +2254,31 @@ static void StopSampler(App& app) {
 static void UpdatePosition(App& app, bool force);
 static void PaintWidget(App& app);
 static void HideMenu(App& app);
+static void BuildSettingsView(App& app);
+static void BuildSettingsLayout(App& app);
+static void PaintSettingsNow(App& app);
 
 static void RefreshAdapterList(App& app) {
+  // Rebuilding the settings window can change its height while a button is
+  // held, which would move the control out from under the click. Defer.
+  if (app.settingsOpen &&
+      (GetCapture() == app.settingsHwnd || (GetKeyState(VK_LBUTTON) & 0x8000))) {
+    app.deviceScanPending = true;
+    return;
+  }
+
   std::vector<AdapterInfo> all;
-  LoadAdapters(all);
+  if (!LoadAdapters(all)) {
+    // Keep the last good list: a transient DXGI failure must not erase the GPU
+    // names or close the settings GPU row. DisplayGpu shows a dash and the
+    // timer retries.
+    app.hardwareScanOk = false;
+    return;
+  }
+  app.hardwareScanOk = true;
+  app.hardwareGpuAdapters.clear();
+  for (const AdapterInfo& adapter : all)
+    if (!adapter.software) app.hardwareGpuAdapters.push_back(adapter);
   app.adapters.clear();
   auto inSample = [&](ULONGLONG luid) {
     for (int i = 0; i < app.sample.gpuCount; ++i)
@@ -2152,15 +2289,27 @@ static void RefreshAdapterList(App& app) {
     if (candidate.software) continue;  // WARP / Basic Render Driver is not a GPU
     bool merged = false;
     for (AdapterInfo& existing : app.adapters) {
-      if (existing.name == candidate.name) {
+      if (SameAdapter(existing, candidate)) {
+        // Two cards of the same model share a description and PCI identity.
+        // Only merge when they are not both reporting counters; two busy cards
+        // stay separate so a pin cannot drift to the other one.
+        const bool existingSeen = inSample(existing.luid);
+        const bool candidateSeen = inSample(candidate.luid);
+        if (existingSeen && candidateSeen) continue;
         // The same physical GPU can be enumerated twice with different LUIDs.
         // Keep whichever one the performance counters actually report.
-        if (!inSample(existing.luid) && inSample(candidate.luid)) existing.luid = candidate.luid;
+        if (!existingSeen && candidateSeen) existing.luid = candidate.luid;
         merged = true;
         break;
       }
     }
     if (!merged) app.adapters.push_back(candidate);
+  }
+
+  if (app.settingsOpen) {
+    BuildSettingsView(app);
+    BuildSettingsLayout(app);
+    PaintSettingsNow(app);
   }
 }
 
@@ -2186,7 +2335,18 @@ static void BuildSettingsView(App& app) {
   v.gpuIndex = 0;
   for (size_t i = 0; i < app.adapters.size(); ++i) {
     v.gpuNames.push_back(app.adapters[i].name);
-    if (app.adapters[i].luid == app.settings.gpuLuid) v.gpuIndex = (int)i + 1;
+    bool selected = app.adapters[i].luid == app.settings.gpuLuid;
+    if (!selected && app.settings.gpuLuid != 0) {
+      // The saved LUID can be the sibling of a merged dual-LUID adapter. Do not
+      // rewrite the pin; just show the entry it belongs to.
+      for (const AdapterInfo& hardware : app.hardwareGpuAdapters) {
+        if (hardware.luid == app.settings.gpuLuid && SameAdapter(hardware, app.adapters[i])) {
+          selected = true;
+          break;
+        }
+      }
+    }
+    if (selected) v.gpuIndex = (int)i + 1;
   }
 }
 
@@ -2524,20 +2684,19 @@ static void SettingsCommand(App& app, int id) {
 }
 
 static void TakeForeground(HWND hwnd) {
-  HWND fg = GetForegroundWindow();
-  DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
-  DWORD myThread = GetCurrentThreadId();
-  // AttachThreadInput waits on the other thread. If the foreground app is hung,
-  // that would freeze Settings before it even appears; fall back instead.
-  if (fgThread && fgThread != myThread && !IsHungAppWindow(fg)) {
-    AttachThreadInput(myThread, fgThread, TRUE);
-    SetForegroundWindow(hwnd);
-    SetFocus(hwnd);
-    AttachThreadInput(myThread, fgThread, FALSE);
-  } else {
-    SetForegroundWindow(hwnd);
-    SetFocus(hwnd);
+  // AttachThreadInput waits on the other thread, and IsHungAppWindow does not
+  // catch a merely slow foreground app. The user clicked our menu, so ask for
+  // the foreground directly instead of risking a blocked UI thread.
+  SetForegroundWindow(hwnd);
+  if (GetForegroundWindow() != hwnd) {
+    // The shell can refuse the request when another app owns the foreground.
+    // Do not spin: flag the window so the user sees it, and retry focus when it
+    // does get activated.
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    FLASHWINFO flash{sizeof(flash), hwnd, FLASHW_ALL, 2, 0};
+    FlashWindowEx(&flash);
   }
+  SetFocus(hwnd);
 }
 
 static void ShowSettings(App& app) {
@@ -2722,6 +2881,9 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
       // window so it does not hover over whatever the user switches to.
       SetWindowPos(hwnd, LOWORD(wParam) == WA_INACTIVE ? HWND_NOTOPMOST : HWND_TOPMOST, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+      // SetForegroundWindow can be refused, so take keyboard focus when
+      // activation finally arrives; otherwise the focus ring is a lie.
+      if (LOWORD(wParam) != WA_INACTIVE) SetFocus(hwnd);
       return 0;
     case WM_CAPTURECHANGED:
       if (app->settingsDragging) app->settingsDragging = false;
@@ -2894,6 +3056,20 @@ static void PaintMenuNow(App& app) {
   if (!app.menuOpen || !app.menuHwnd) return;
   app.renderer.PaintMenu(app.menuHwnd, app.menuRect.left, app.menuRect.top, app.theme, app.menuItems,
                          app.menuHover, app.menuW, app.menuH);
+}
+
+static bool ThemeMatches(const Theme& a, const Theme& b) {
+  return a.light == b.light && a.accent.r == b.accent.r && a.accent.g == b.accent.g &&
+         a.accent.b == b.accent.b;
+}
+
+static void RefreshTheme(App& app) {
+  Theme fresh = LoadTheme();
+  if (ThemeMatches(fresh, app.theme)) return;
+  app.theme = fresh;
+  PaintWidget(app);
+  PaintSettingsNow(app);
+  if (app.menuOpen) PaintMenuNow(app);
 }
 
 static void HideMenu(App& app) {
@@ -3121,8 +3297,18 @@ static void UpdatePosition(App& app, bool force) {
   app.ow = L.w;
   app.oh = L.h;
 
+  // The full-window scan is expensive and talks to DWM. Run it at most once a
+  // second, or immediately when the foreground window changes. A drag or a
+  // repaint must not bypass this; only the foreground and the timer do.
+  const ULONGLONG coverNow = GetTickCount64();
+  HWND foreground = GetForegroundWindow();
+  if (foreground != app.coverScanForeground || coverNow - app.coverScanTick >= 1000) {
+    app.coverScanForeground = foreground;
+    app.coverScanTick = coverNow;
+    app.coverScanCovered = TaskbarCoveredByFullscreen(app);
+  }
   bool taskbarReady = TaskbarVisible(app, taskbarRect) && IsWindowVisible(app.taskbar) &&
-                      !FullscreenOnTaskbarMonitor(app) && !TaskbarCoveredByFullscreen(app);
+                      !FullscreenOnTaskbarMonitor(app) && !app.coverScanCovered;
   bool show = taskbarReady && app.hasSample;
   app.samplingActive.store(taskbarReady);
 
@@ -3262,14 +3448,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         static int themeTick = 0;
         if (++themeTick >= 8) {
           themeTick = 0;
-          Theme fresh = LoadTheme();
-          if (fresh.light != app->theme.light || fresh.accent.r != app->theme.accent.r ||
-              fresh.accent.g != app->theme.accent.g || fresh.accent.b != app->theme.accent.b) {
-            app->theme = fresh;
-            PaintWidget(*app);
-            PaintSettingsNow(*app);
-            if (app->menuOpen) PaintMenuNow(*app);
-          }
+          if (!app->hardwareScanOk) RefreshAdapterList(*app);
+          RefreshTheme(*app);
+        }
+        if (app->deviceScanPending && GetTickCount64() - app->deviceScanTick >= 2000) {
+          app->deviceScanPending = false;
+          app->deviceScanTick = GetTickCount64();
+          RefreshAdapterList(*app);
+          UpdatePosition(*app, true);
         }
         EnsureVirtualDesktop(*app);
         UpdatePosition(*app, false);
@@ -3328,23 +3514,42 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DPICHANGED:
     case WM_DISPLAYCHANGE:
       app->laidOut = false;
+      // The monitor rectangle may have changed; do not trust the cached cover
+      // result until the next scan.
+      app->coverScanTick = 0;
+      app->coverScanForeground = nullptr;
+      if (msg == WM_DISPLAYCHANGE) RefreshAdapterList(*app);
       if (app->settingsOpen) {
         HideSettings(*app);
         ShowSettings(*app);
       }
       UpdatePosition(*app, true);
       return 0;
-    case WM_SETTINGCHANGE:
-      if (lParam && !wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet")) {
-        app->theme = LoadTheme();
-        PaintWidget(*app);
-        PaintSettingsNow(*app);
-        if (app->menuOpen) PaintMenuNow(*app);
+    case WM_DEVICECHANGE:
+      if (wParam == DBT_DEVNODES_CHANGED) {
+        const ULONGLONG now = GetTickCount64();
+        if (now - app->deviceScanTick >= 2000) {
+          app->deviceScanTick = now;
+          app->coverScanTick = 0;
+          app->coverScanForeground = nullptr;
+          RefreshAdapterList(*app);
+          UpdatePosition(*app, true);
+        } else {
+          // A dock or eGPU can emit a burst before the device node exists. Keep
+          // one pending scan instead of dropping the later events.
+          app->deviceScanPending = true;
+        }
+        return TRUE;
       }
+      break;
+    case WM_SETTINGCHANGE:
+      RefreshTheme(*app);
       return 0;
     case WM_POWERBROADCAST:
       if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND) {
         StartSampler(*app);
+        app->coverScanTick = 0;
+        app->coverScanForeground = nullptr;
         UpdatePosition(*app, true);
       }
       return TRUE;
@@ -3357,9 +3562,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_ERASEBKGND:
       return 1;
     case WM_CLOSE:
+      // Ask the worker to stop before the window dies so it cannot post a sample
+      // to a recycled HWND, and remove the tray icon while our handle is still
+      // valid. The bounded join lives in wWinMain, after the message loop.
+      app->sampleTarget.store(nullptr);
+      SetEvent(app->stopEvent);
+      RemoveTrayIcon(*app);
       HideSettings(*app);
       HideMenu(*app);
       DestroyWindow(hwnd);
+      app->hwnd = nullptr;
       return 0;
     case WM_DESTROY:
       PostQuitMessage(0);
@@ -3372,6 +3584,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     Log(L"TaskbarCreated");
     app->taskbar = nullptr;
     app->tray = nullptr;
+    app->coverScanTick = 0;
+    app->coverScanForeground = nullptr;
     AddTrayIcon(*app);
     app->visible = false;
     UpdatePosition(*app, true);
@@ -3408,7 +3622,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   bool firstRun = GetFileAttributesW(ConfigPath().c_str()) == INVALID_FILE_ATTRIBUTES;
   if (firstRun) SetAutostart(true);
   app.theme = LoadTheme();
-  LoadAdapters(app.adapters);
+  RefreshAdapterList(app);
   Log(L"adapters %zu", app.adapters.size());
   if (AutostartEnabled()) SetAutostart(true);  // refresh the path if the exe moved
 
@@ -3484,8 +3698,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     DispatchMessageW(&msg);
   }
 
+  app.sampleTarget.store(nullptr);
   StopSampler(app);
-  RemoveTrayIcon(app);
   KillTimer(app.hwnd, 1);
   if (g_geomHook) {
     UnhookWinEvent(g_geomHook);
@@ -3499,7 +3713,15 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   if (app.settingsHwnd) DestroyWindow(app.settingsHwnd);
   if (app.hwnd) DestroyWindow(app.hwnd);
   if (app.trayIcon) DestroyIcon(app.trayIcon);
-  if (!app.thread) DeleteCriticalSection(&app.sampleLock);
+  if (app.screen) {
+    ReleaseDC(nullptr, app.screen);
+    app.screen = nullptr;
+  }
+  if (!app.thread) {
+    if (app.stopEvent) CloseHandle(app.stopEvent);
+    if (app.wakeEvent) CloseHandle(app.wakeEvent);
+    DeleteCriticalSection(&app.sampleLock);
+  }
   if (mutex) CloseHandle(mutex);
   CoUninitialize();
   return 0;

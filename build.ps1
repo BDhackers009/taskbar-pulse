@@ -34,7 +34,7 @@ if ($LASTEXITCODE -ne 0) { throw "rc failed ($LASTEXITCODE)" }
 $exe = Join-Path $root "TaskbarPulse.exe"
 & cl.exe /nologo /std:c++20 /O2 /MT /EHsc /W3 /DUNICODE /D_UNICODE `
   /Fo"$build\main.obj" /Fe"$exe" "$src\main.cpp" "$build\app.res" `
-  /link /SUBSYSTEM:WINDOWS /MANIFEST:NO /INCREMENTAL:NO
+  /link /SUBSYSTEM:WINDOWS /MANIFEST:NO /INCREMENTAL:NO /DEPENDENTLOADFLAG:0x800
 if ($LASTEXITCODE -ne 0) { throw "cl failed ($LASTEXITCODE)" }
 
 "OK: $exe  ({0:N0} bytes)" -f (Get-Item $exe).Length
