@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>CPU, GPU, memory, network and temperature, in your taskbar.</b><br>
-  A 300 KB native widget. No installer, no runtime, no telemetry.
+  A 305 KB native widget. No installer, no runtime, no telemetry.
 </p>
 
 <p align="center">
@@ -54,7 +54,7 @@ Measured on a laptop with Windows 11 26H2 at 1920×1200 and 125% scaling, one mi
 
 | | Taskbar Pulse | TrafficMonitor Lite 1.86 |
 | --- | --- | --- |
-| Download | **300 KB, one exe** | 1.92 MB exe |
+| Download | **305 KB, one exe** | 1.92 MB exe |
 | Private memory | **about 9 MB** | 12.0 MB |
 | CPU at 1 s | **about 0.4% of one core** | 0.63% |
 | Temperature | **ACPI thermal zone** | none |
