@@ -21,7 +21,7 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-![The Taskbar Pulse widget](docs/taskbar.png)
+![The Taskbar Pulse widget](docs/reddit-promo.png)
 
 ## What is this?
 
