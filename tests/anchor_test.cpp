@@ -104,6 +104,35 @@ int main() {
          Make(Box{0, 0, 1920, 48}, Box{1740, 0, 1920, 48}, true, 228, 32, 6, false, 0, true), 1506,
          8, 32, 0);
 
+  {
+    anchor::Input in =
+        Make(Box{0, 0, 1000, 48}, Box{800, 0, 1000, 48}, true, 100, 32, 6);
+    in.feeds[0] = Box{600, 0, 800, 48};
+    in.feedsCount = 1;
+    Expect("feeds LTR", in, 494, 8, 32, 0);
+    in.feeds[1] = Box{700, 0, 800, 48};
+    in.feedsCount = 2;
+    Expect("feeds LTR inboard", in, 594, 8, 32, 0);
+    in.feeds[0] = Box{0, 0, 40, 48};
+    in.feeds[1] = Box{};
+    in.feedsCount = 1;
+    Expect("feeds LTR fallback", in, 694, 8, 32, 0);
+  }
+  {
+    anchor::Input in =
+        Make(Box{0, 0, 1000, 48}, Box{0, 0, 200, 48}, true, 100, 32, 6);
+    in.feeds[0] = Box{200, 0, 400, 48};
+    in.feedsCount = 1;
+    Expect("feeds RTL", in, 406, 8, 32, 0, true);
+    in.feeds[1] = Box{200, 0, 300, 48};
+    in.feedsCount = 2;
+    Expect("feeds RTL inboard", in, 306, 8, 32, 0, true);
+    in.feeds[0] = Box{960, 0, 1000, 48};
+    in.feeds[1] = Box{};
+    in.feedsCount = 1;
+    Expect("feeds RTL fallback", in, 206, 8, 32, 0, true);
+  }
+
   Expect("vertical preserved",
          Make(Box{0, 0, 48, 1000}, Box{0, 900, 48, 1000}, false, 40, 32, 6), 4, 966, 32, 0);
   Expect("vertical borderless preserved",

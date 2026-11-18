@@ -69,8 +69,31 @@ inline Outcome Compute(const Input& in) {
     const long long barMid2 = (long long)in.bar.left + in.bar.right;
     const long long trayMid2 = (long long)in.tray.left + in.tray.right;
     r.widgetRightOfTray = trayMid2 < barMid2;
-    r.x = r.widgetRightOfTray ? in.tray.right + in.gapPx
-                              : in.tray.left - in.gapPx - in.widgetW;
+    int x = r.widgetRightOfTray ? in.tray.right + in.gapPx
+                                : in.tray.left - in.gapPx - in.widgetW;
+
+    const int count = std::min(2, std::max(0, in.feedsCount));
+    int chosen = -1;
+    if (!r.widgetRightOfTray) {
+      for (int i = 0; i < count; ++i)
+        if (in.feeds[i].left <= in.tray.left &&
+            (chosen < 0 || in.feeds[i].left > in.feeds[chosen].left))
+          chosen = i;
+      if (chosen >= 0) {
+        const int candidate = in.feeds[chosen].left - in.gapPx - in.widgetW;
+        if (candidate >= minX && candidate <= maxX) x = candidate;
+      }
+    } else {
+      for (int i = 0; i < count; ++i)
+        if (in.feeds[i].right >= in.tray.right &&
+            (chosen < 0 || in.feeds[i].right < in.feeds[chosen].right))
+          chosen = i;
+      if (chosen >= 0) {
+        const int candidate = in.feeds[chosen].right + in.gapPx;
+        if (candidate >= minX && candidate <= maxX) x = candidate;
+      }
+    }
+    r.x = x;
     r.y = in.bar.top + (barH - h) / 2;
   } else {
     // Deliberately preserved from 1.1.4; vertical taskbars are a 1.2 feature.

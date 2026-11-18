@@ -2049,6 +2049,45 @@ static void FindTaskbar(App& app) {
   RefreshGeometryHook(app);
 }
 
+static int CollectFeeds(HWND taskbar, const RECT& bar, RECT out[2]) {
+  static const wchar_t* kClasses[] = {L"ShellFeedsTaskbarViewWindow", L"DynamicContent2"};
+  static HWND last[2] = {};
+  static int lastCount = -1;
+
+  HWND found[2] = {};
+  const wchar_t* foundClass[2] = {};
+  int count = 0;
+  for (const wchar_t* cls : kClasses) {
+    HWND feed = FindWindowExW(taskbar, nullptr, cls, nullptr);
+    if (!feed || !IsWindowVisible(feed)) continue;
+    RECT r{};
+    if (!GetWindowRect(feed, &r)) continue;
+    if (r.right <= r.left || r.bottom <= r.top) continue;
+    if (!(r.bottom > bar.top && r.top < bar.bottom)) continue;
+    out[count] = r;
+    found[count] = feed;
+    foundClass[count] = cls;
+    ++count;
+  }
+
+  bool changed = count != lastCount;
+  for (int i = 0; i < count && !changed; ++i)
+    if (found[i] != last[i]) changed = true;
+  if (changed) {
+    if (count == 0) {
+      Log(L"feeds: none bar=%d,%d,%d,%d", bar.left, bar.top, bar.right, bar.bottom);
+    } else {
+      for (int i = 0; i < count; ++i)
+        Log(L"feeds: %ls hwnd=%p rect=%d,%d,%d,%d visible=1 bar=%d,%d,%d,%d", foundClass[i],
+            found[i], out[i].left, out[i].top, out[i].right, out[i].bottom, bar.left, bar.top,
+            bar.right, bar.bottom);
+    }
+    for (int i = 0; i < 2; ++i) last[i] = i < count ? found[i] : nullptr;
+    lastCount = count;
+  }
+  return count;
+}
+
 static bool TaskbarVisible(App& app, const RECT& rect) {
   MONITORINFO mi{};
   mi.cbSize = sizeof(mi);
@@ -3259,6 +3298,8 @@ static void UpdatePosition(App& app, bool force) {
   float scale = app.taskbarDpi / 96.0f;
   const bool horizontal =
       (taskbarRect.right - taskbarRect.left) >= (taskbarRect.bottom - taskbarRect.top);
+  RECT feedRects[2]{};
+  const int feedCount = CollectFeeds(app.taskbar, taskbarRect, feedRects);
 
   anchor::Input input;
   input.bar = {taskbarRect.left, taskbarRect.top, taskbarRect.right, taskbarRect.bottom};
@@ -3283,6 +3324,10 @@ static void UpdatePosition(App& app, bool force) {
   input.insetPx = Rounded(6.0f * scale);
   input.gapPx = Rounded((ui::kGapFromTray + app.settings.offset) * scale);
   input.borderless = app.settings.borderless;
+  input.feedsCount = feedCount;
+  for (int i = 0; i < feedCount; ++i)
+    input.feeds[i] = {feedRects[i].left, feedRects[i].top, feedRects[i].right,
+                      feedRects[i].bottom};
 
   const anchor::Outcome placement = anchor::Compute(input);
   const anchor::Result& placed = *placement.result;
