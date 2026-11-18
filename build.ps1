@@ -28,6 +28,12 @@ if ($LASTEXITCODE -ne 0) { throw "contrast test build failed ($LASTEXITCODE)" }
 & "$build\contrast_test.exe"
 if ($LASTEXITCODE -ne 0) { throw "contrast test failed ($LASTEXITCODE)" }
 
+& cl.exe /nologo /std:c++20 /O2 /MT /EHsc /W3 `
+  /Fo"$build\anchor_test.obj" /Fe"$build\anchor_test.exe" "$root\tests\anchor_test.cpp"
+if ($LASTEXITCODE -ne 0) { throw "anchor test build failed ($LASTEXITCODE)" }
+& "$build\anchor_test.exe"
+if ($LASTEXITCODE -ne 0) { throw "anchor test failed ($LASTEXITCODE)" }
+
 & rc.exe /nologo /fo "$build\app.res" "$src\app.rc"
 if ($LASTEXITCODE -ne 0) { throw "rc failed ($LASTEXITCODE)" }
 

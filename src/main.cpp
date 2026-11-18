@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "resource.h"
+#include "taskbar_anchor.h"
 #include "theme_color.h"
 
 #pragma comment(lib, "d2d1.lib")
@@ -3254,42 +3255,39 @@ static void UpdatePosition(App& app, bool force) {
 
   Layout& L = app.layout;
   float scale = app.taskbarDpi / 96.0f;
-  if (app.settings.borderless) {
-    int full = (taskbarRect.bottom - taskbarRect.top) - Rounded(6.0f * scale);
-    if (full < L.contentH) full = L.contentH;
-    L.h = full;
-    L.offsetY = (L.h - L.contentH) / 2;
-  } else {
-    L.h = L.contentH;
-    L.offsetY = 0;
-  }
-  bool horizontal = (taskbarRect.right - taskbarRect.left) >= (taskbarRect.bottom - taskbarRect.top);
+  const bool horizontal =
+      (taskbarRect.right - taskbarRect.left) >= (taskbarRect.bottom - taskbarRect.top);
 
-  int x = 0, y = 0;
-  if (horizontal) {
-    RECT trayRect{};
-    int rightEdge = taskbarRect.right - Rounded(180.0f * scale);
-    if (app.tray && GetWindowRect(app.tray, &trayRect)) rightEdge = trayRect.left;
-    int gap = Rounded((ui::kGapFromTray + app.settings.offset) * scale);
-    x = rightEdge - gap - L.w;
-    y = taskbarRect.top + (taskbarRect.bottom - taskbarRect.top - L.h) / 2;
+  anchor::Input input;
+  input.bar = {taskbarRect.left, taskbarRect.top, taskbarRect.right, taskbarRect.bottom};
+  input.hasTray = true;
+  RECT trayRect{};
+  if (app.tray && GetWindowRect(app.tray, &trayRect)) {
+    input.tray = {trayRect.left, trayRect.top, trayRect.right, trayRect.bottom};
   } else {
-    RECT trayRect{};
-    int topEdge = taskbarRect.top + Rounded(180.0f * scale);
-    if (app.tray && GetWindowRect(app.tray, &trayRect)) topEdge = trayRect.bottom;
-    int gap = Rounded((ui::kGapFromTray + app.settings.offset) * scale);
-    y = topEdge + gap;
-    x = taskbarRect.left + (taskbarRect.right - taskbarRect.left - L.w) / 2;
+    // The 180 px fallback is preserved for this commit and deleted with validation.
+    if (horizontal) {
+      const int edge = taskbarRect.right - Rounded(180.0f * scale);
+      input.tray = {edge, taskbarRect.top, taskbarRect.right, taskbarRect.bottom};
+    } else {
+      const int edge = taskbarRect.top + Rounded(180.0f * scale);
+      input.tray = {taskbarRect.left, taskbarRect.top, taskbarRect.left, edge};
+    }
+    input.traySynthetic = true;
   }
+  input.horizontal = horizontal;
+  input.widgetW = L.w;
+  input.contentH = L.contentH;
+  input.insetPx = Rounded(6.0f * scale);
+  input.gapPx = Rounded((ui::kGapFromTray + app.settings.offset) * scale);
+  input.borderless = app.settings.borderless;
 
-  int minX = taskbarRect.left + 4;
-  int maxX = taskbarRect.right - L.w - 4;
-  if (x < minX) x = minX;
-  if (x > maxX) x = maxX;
-  int minY = taskbarRect.top + 2;
-  int maxY = taskbarRect.bottom - L.h - 2;
-  if (y < minY) y = minY;
-  if (y > maxY) y = maxY;
+  const anchor::Outcome placement = anchor::Compute(input);
+  const anchor::Result& placed = *placement.result;
+  L.h = placed.h;
+  L.offsetY = placed.offsetY;
+  const int x = placed.x;
+  const int y = placed.y;
 
   bool changed = force || x != app.x || y != app.y || L.w != app.ow || L.h != app.oh || !app.visible;
   app.x = x;

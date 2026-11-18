@@ -1,0 +1,103 @@
+// Pins the taskbar placement arithmetic without Windows or Direct2D.
+// Built and run by build.ps1.
+
+#include "../src/taskbar_anchor.h"
+#include <cstdio>
+
+namespace {
+
+int g_checks = 0;
+int g_failures = 0;
+
+void Check(bool ok, const char* what) {
+  ++g_checks;
+  if (!ok) {
+    ++g_failures;
+    std::printf("FAIL: %s\n", what);
+  }
+}
+
+anchor::Input Make(anchor::Box bar, anchor::Box tray, bool horizontal, int widgetW,
+                   int contentH, int gapPx, bool borderless = false, int insetPx = 0,
+                   bool synthetic = false) {
+  anchor::Input in;
+  in.bar = bar;
+  in.tray = tray;
+  in.hasTray = true;
+  in.traySynthetic = synthetic;
+  in.horizontal = horizontal;
+  in.widgetW = widgetW;
+  in.contentH = contentH;
+  in.gapPx = gapPx;
+  in.borderless = borderless;
+  in.insetPx = insetPx;
+  return in;
+}
+
+void Expect(const char* name, const anchor::Input& in, int x, int y, int h, int offsetY,
+            bool right = false) {
+  const anchor::Outcome out = anchor::Compute(in);
+  if (!out.result) {
+    Check(false, name);
+    return;
+  }
+  const anchor::Result& r = *out.result;
+  Check(r.x == x && r.y == y && r.h == h && r.offsetY == offsetY &&
+            r.widgetRightOfTray == right,
+        name);
+}
+
+}  // namespace
+
+int main() {
+  using anchor::Box;
+
+  Expect("LTR horizontal", Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 6),
+         1566, 8, 32, 0);
+  Expect("top-docked bar",
+         Make(Box{0, -48, 1920, 0}, Box{1800, -48, 1920, 0}, true, 228, 32, 6), 1566, -40, 32, 0);
+  Expect("negative-origin bar",
+         Make(Box{-1920, 0, 0, 48}, Box{-120, 0, 0, 48}, true, 228, 32, 6), -354, 8, 32, 0);
+
+  // Known 1.1.4 clipping: the max clamp wins on a 30 px bar.
+  Expect("small bar clips", Make(Box{0, 0, 1920, 30}, Box{1800, 0, 1920, 30}, true, 228, 32, 6),
+         1566, -4, 32, 0);
+
+  // Known 1.1.4 clamp inversion: max wins when the widget is wider than the bar.
+  Expect("widget wider than bar",
+         Make(Box{0, 0, 200, 48}, Box{100, 0, 200, 48}, true, 300, 32, 6), -104, 8, 32, 0);
+  Expect("widget exactly fits",
+         Make(Box{0, 0, 200, 48}, Box{100, 0, 200, 48}, true, 192, 32, 0), 4, 8, 32, 0);
+
+  Expect("borderless", Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 6, true, 8),
+         1566, 4, 40, 4);
+  Expect("120 dpi values",
+         Make(Box{0, 0, 2400, 60}, Box{2250, 0, 2400, 60}, true, 285, 40, 8), 1957, 10, 40, 0);
+  Expect("144 dpi values",
+         Make(Box{0, 0, 2880, 72}, Box{2700, 0, 2880, 72}, true, 342, 48, 9), 2349, 12, 48, 0);
+  Expect("192 dpi values",
+         Make(Box{0, 0, 3840, 96}, Box{3600, 0, 3840, 96}, true, 456, 64, 12), 3132, 16, 64, 0);
+
+  Expect("gap 40", Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 40), 1532, 8,
+         32, 0);
+  Expect("gap 4000 hits min clamp",
+         Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 4000), 4, 8, 32, 0);
+
+  // 1.1.4 passes a negative gap through; commit 4 changes this.
+  Expect("negative gap pass-through",
+         Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, -100), 1672, 8, 32, 0);
+
+  // The one synthetic-fallback test required for commit 1.
+  Expect("synthetic fallback",
+         Make(Box{0, 0, 1920, 48}, Box{1740, 0, 1920, 48}, true, 228, 32, 6, false, 0, true), 1506,
+         8, 32, 0);
+
+  Expect("vertical preserved",
+         Make(Box{0, 0, 48, 1000}, Box{0, 900, 48, 1000}, false, 40, 32, 6), 4, 966, 32, 0);
+  Expect("vertical borderless preserved",
+         Make(Box{0, 0, 48, 1000}, Box{0, 900, 48, 1000}, false, 40, 32, 6, true, 8), 4, 6, 992,
+         480);
+
+  std::printf("anchor tests: %d checks, %d failures\n", g_checks, g_failures);
+  return g_failures == 0 ? 0 : 1;
+}
