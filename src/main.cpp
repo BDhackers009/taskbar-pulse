@@ -160,7 +160,7 @@ struct Settings {
   bool borderless = false;
   bool locked = false;
   int intervalMs = 1000;
-  int offset = 0;  // extra logical pixels to the left of the tray
+  int offset = 0;  // gap from the tray, toward the task buttons, in logical pixels
   int warnPct[3] = {70, 70, 70};
   int critPct[3] = {90, 90, 90};
   unsigned long long gpuLuid = 0;  // 0 = automatic (busiest adapter)
@@ -1441,6 +1441,7 @@ struct App {
   int dragStartCursorX = 0;
   int dragStartOffset = 0;
   int dragMoved = 0;
+  bool widgetRightOfTray = false;  // derived from the tray position; default LTR
 
   HWND menuHwnd = nullptr;
   bool menuOpen = false;
@@ -3131,10 +3132,11 @@ static void ShowMenu(App& app, bool atCursor) {
   GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
   int x = 0, y = 0;
   if (atCursor) {
-    x = pt.x - bodyW - shadow;
+    x = app.widgetRightOfTray ? pt.x - shadow : pt.x - bodyW - shadow;
     y = pt.y - bodyH - shadow;
   } else {
-    x = app.x + app.layout.w - bodyW - shadow;
+    x = app.widgetRightOfTray ? app.x - shadow
+                              : app.x + app.layout.w - bodyW - shadow;
     y = app.y - bodyH - shadow - Rounded(6.0f * scale);
   }
   if (x + app.menuW > mi.rcWork.right - 4) x = mi.rcWork.right - app.menuW - 4;
@@ -3284,6 +3286,14 @@ static void UpdatePosition(App& app, bool force) {
 
   const anchor::Outcome placement = anchor::Compute(input);
   const anchor::Result& placed = *placement.result;
+  const bool previousRight = app.widgetRightOfTray;
+  app.widgetRightOfTray = placed.widgetRightOfTray;
+  if (app.widgetRightOfTray != previousRight) {
+    const bool rtlStyle =
+        (GetWindowLongW(app.taskbar, GWL_EXSTYLE) & WS_EX_LAYOUTRTL) != 0;
+    Log(L"anchor: widgetRightOfTray=%d rtlStyle=%d", app.widgetRightOfTray ? 1 : 0,
+        rtlStyle ? 1 : 0);
+  }
   L.h = placed.h;
   L.offsetY = placed.offsetY;
   const int x = placed.x;
@@ -3388,10 +3398,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int moved = delta < 0 ? -delta : delta;
         if (moved > app->dragMoved) app->dragMoved = moved;
         if (app->settings.locked) return 0;
-        float scale = app->taskbarDpi / 96.0f;
-        int offset = app->dragStartOffset + Rounded(delta / scale);
-        if (offset < 0) offset = 0;
-        if (offset > 4000) offset = 4000;
+        const int offset =
+            anchor::DragGap(app->dragStartOffset, app->dragStartCursorX, pt.x,
+                            app->taskbarDpi / 96.0f, app->widgetRightOfTray);
         if (offset != app->settings.offset) {
           app->settings.offset = offset;
           UpdatePosition(*app, true);

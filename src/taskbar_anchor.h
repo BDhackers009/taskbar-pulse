@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <optional>
 
 namespace anchor {
@@ -62,7 +64,13 @@ inline Outcome Compute(const Input& in) {
   const int maxY = in.bar.bottom - h - 2;
 
   if (in.horizontal) {
-    r.x = in.tray.left - in.gapPx - in.widgetW;
+    // The tray hugs the nearer end of the bar. An exact tie uses the high-end
+    // convention, so the result is deterministic without the RTL style bit.
+    const long long barMid2 = (long long)in.bar.left + in.bar.right;
+    const long long trayMid2 = (long long)in.tray.left + in.tray.right;
+    r.widgetRightOfTray = trayMid2 < barMid2;
+    r.x = r.widgetRightOfTray ? in.tray.right + in.gapPx
+                              : in.tray.left - in.gapPx - in.widgetW;
     r.y = in.bar.top + (barH - h) / 2;
   } else {
     // Deliberately preserved from 1.1.4; vertical taskbars are a 1.2 feature.
@@ -76,6 +84,14 @@ inline Outcome Compute(const Input& in) {
   if (r.y < minY) r.y = minY;
   if (r.y > maxY) r.y = maxY;
   return {r, Reason::None};
+}
+
+inline int DragGap(int startOffsetDip, int startCursorX, int cursorX, float scale,
+                   bool widgetRightOfTray) {
+  if (!(scale > 0.0f)) scale = 1.0f;
+  const int delta = widgetRightOfTray ? cursorX - startCursorX : startCursorX - cursorX;
+  const int offset = startOffsetDip + (int)std::lround(delta / scale);
+  return std::clamp(offset, 0, 4000);
 }
 
 }  // namespace anchor

@@ -54,6 +54,18 @@ int main() {
 
   Expect("LTR horizontal", Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 6),
          1566, 8, 32, 0);
+  Expect("RTL horizontal", Make(Box{0, 0, 1920, 48}, Box{0, 0, 120, 48}, true, 228, 32, 6), 126,
+         8, 32, 0, true);
+  Expect("mirror invariant LTR",
+         Make(Box{0, 0, 1000, 48}, Box{800, 0, 1000, 48}, true, 100, 32, 6), 694, 8, 32, 0);
+  Expect("mirror invariant RTL",
+         Make(Box{0, 0, 1000, 48}, Box{0, 0, 200, 48}, true, 100, 32, 6), 206, 8, 32, 0, true);
+  Expect("tray exactly at bar centre",
+         Make(Box{0, 0, 1000, 48}, Box{400, 0, 600, 48}, true, 100, 32, 6), 294, 8, 32, 0);
+  Expect("tray before centre", Make(Box{0, 0, 1000, 48}, Box{300, 0, 499, 48}, true, 100, 32, 6),
+         505, 8, 32, 0, true);
+  Expect("tray after centre", Make(Box{0, 0, 1000, 48}, Box{501, 0, 700, 48}, true, 100, 32, 6),
+         395, 8, 32, 0);
   Expect("top-docked bar",
          Make(Box{0, -48, 1920, 0}, Box{1800, -48, 1920, 0}, true, 228, 32, 6), 1566, -40, 32, 0);
   Expect("negative-origin bar",
@@ -97,6 +109,14 @@ int main() {
   Expect("vertical borderless preserved",
          Make(Box{0, 0, 48, 1000}, Box{0, 900, 48, 1000}, false, 40, 32, 6, true, 8), 4, 6, 992,
          480);
+
+  Check(anchor::DragGap(40, 100, 90, 1.0f, false) == 50, "drag LTR moves gap left");
+  Check(anchor::DragGap(40, 90, 100, 1.0f, true) == 50, "drag RTL moves gap right");
+  Check(anchor::DragGap(0, 100, 110, 1.0f, false) == 0, "LTR outward drag clamps at zero");
+  Check(anchor::DragGap(0, 100, 90, 1.0f, true) == 0, "RTL outward drag clamps at zero");
+  Check(anchor::DragGap(0, 100, 100, 1.0f, false) == 0, "zero drag delta");
+  Check(anchor::DragGap(4000, 100, 1000, 1.0f, true) == 4000, "drag clamps at 4000");
+  Check(anchor::DragGap(0, 100, 89, 1.25f, false) == 9, "drag rounds at 125%");
 
   std::printf("anchor tests: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
