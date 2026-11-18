@@ -17,7 +17,6 @@ struct Input {
   Box bar{};
   Box tray{};
   bool hasTray = false;
-  bool traySynthetic = false;  // temporary: skips validation for commit 1's fallback
   Box feeds[2]{};
   int feedsCount = 0;
   bool horizontal = true;
@@ -45,8 +44,14 @@ struct Outcome {
 
 inline Outcome Compute(const Input& in) {
   if (!in.hasTray) return {std::nullopt, Reason::NoAnchor};
+  if (in.tray.right <= in.tray.left || in.tray.bottom <= in.tray.top)
+    return {std::nullopt, Reason::NoAnchor};
+  if (in.tray.left < in.bar.left || in.tray.right > in.bar.right ||
+      in.tray.top < in.bar.top || in.tray.bottom > in.bar.bottom)
+    return {std::nullopt, Reason::NoAnchor};
 
   const int barH = in.bar.bottom - in.bar.top;
+  const int gapPx = std::max(0, in.gapPx);
   int h = in.contentH;
   if (in.borderless) {
     const int full = barH - in.insetPx;
@@ -69,8 +74,8 @@ inline Outcome Compute(const Input& in) {
     const long long barMid2 = (long long)in.bar.left + in.bar.right;
     const long long trayMid2 = (long long)in.tray.left + in.tray.right;
     r.widgetRightOfTray = trayMid2 < barMid2;
-    int x = r.widgetRightOfTray ? in.tray.right + in.gapPx
-                                : in.tray.left - in.gapPx - in.widgetW;
+    int x = r.widgetRightOfTray ? in.tray.right + gapPx
+                                : in.tray.left - gapPx - in.widgetW;
 
     const int count = std::min(2, std::max(0, in.feedsCount));
     int chosen = -1;
@@ -80,7 +85,7 @@ inline Outcome Compute(const Input& in) {
             (chosen < 0 || in.feeds[i].left > in.feeds[chosen].left))
           chosen = i;
       if (chosen >= 0) {
-        const int candidate = in.feeds[chosen].left - in.gapPx - in.widgetW;
+        const int candidate = in.feeds[chosen].left - gapPx - in.widgetW;
         if (candidate >= minX && candidate <= maxX) x = candidate;
       }
     } else {
@@ -89,7 +94,7 @@ inline Outcome Compute(const Input& in) {
             (chosen < 0 || in.feeds[i].right < in.feeds[chosen].right))
           chosen = i;
       if (chosen >= 0) {
-        const int candidate = in.feeds[chosen].right + in.gapPx;
+        const int candidate = in.feeds[chosen].right + gapPx;
         if (candidate >= minX && candidate <= maxX) x = candidate;
       }
     }
@@ -97,7 +102,7 @@ inline Outcome Compute(const Input& in) {
     r.y = in.bar.top + (barH - h) / 2;
   } else {
     // Deliberately preserved from 1.1.4; vertical taskbars are a 1.2 feature.
-    r.y = in.tray.bottom + in.gapPx;
+    r.y = in.tray.bottom + gapPx;
     r.x = in.bar.left + (in.bar.right - in.bar.left - in.widgetW) / 2;
   }
 

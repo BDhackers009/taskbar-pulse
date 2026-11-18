@@ -1442,6 +1442,7 @@ struct App {
   int dragStartOffset = 0;
   int dragMoved = 0;
   bool widgetRightOfTray = false;  // derived from the tray position; default LTR
+  bool anchorMissing = false;
 
   HWND menuHwnd = nullptr;
   bool menuOpen = false;
@@ -3303,26 +3304,17 @@ static void UpdatePosition(App& app, bool force) {
 
   anchor::Input input;
   input.bar = {taskbarRect.left, taskbarRect.top, taskbarRect.right, taskbarRect.bottom};
-  input.hasTray = true;
+  input.hasTray = false;
   RECT trayRect{};
   if (app.tray && GetWindowRect(app.tray, &trayRect)) {
     input.tray = {trayRect.left, trayRect.top, trayRect.right, trayRect.bottom};
-  } else {
-    // The 180 px fallback is preserved for this commit and deleted with validation.
-    if (horizontal) {
-      const int edge = taskbarRect.right - Rounded(180.0f * scale);
-      input.tray = {edge, taskbarRect.top, taskbarRect.right, taskbarRect.bottom};
-    } else {
-      const int edge = taskbarRect.top + Rounded(180.0f * scale);
-      input.tray = {taskbarRect.left, taskbarRect.top, taskbarRect.left, edge};
-    }
-    input.traySynthetic = true;
+    input.hasTray = true;
   }
   input.horizontal = horizontal;
   input.widgetW = L.w;
   input.contentH = L.contentH;
   input.insetPx = Rounded(6.0f * scale);
-  input.gapPx = Rounded((ui::kGapFromTray + app.settings.offset) * scale);
+  input.gapPx = std::max(0, Rounded((ui::kGapFromTray + app.settings.offset) * scale));
   input.borderless = app.settings.borderless;
   input.feedsCount = feedCount;
   for (int i = 0; i < feedCount; ++i)
@@ -3330,25 +3322,37 @@ static void UpdatePosition(App& app, bool force) {
                       feedRects[i].bottom};
 
   const anchor::Outcome placement = anchor::Compute(input);
-  const anchor::Result& placed = *placement.result;
-  const bool previousRight = app.widgetRightOfTray;
-  app.widgetRightOfTray = placed.widgetRightOfTray;
-  if (app.widgetRightOfTray != previousRight) {
-    const bool rtlStyle =
-        (GetWindowLongW(app.taskbar, GWL_EXSTYLE) & WS_EX_LAYOUTRTL) != 0;
-    Log(L"anchor: widgetRightOfTray=%d rtlStyle=%d", app.widgetRightOfTray ? 1 : 0,
-        rtlStyle ? 1 : 0);
+  int x = 0, y = 0;
+  bool changed = false;
+  if (placement.result) {
+    const anchor::Result& placed = *placement.result;
+    app.anchorMissing = false;
+    const bool previousRight = app.widgetRightOfTray;
+    app.widgetRightOfTray = placed.widgetRightOfTray;
+    if (app.widgetRightOfTray != previousRight) {
+      const bool rtlStyle =
+          (GetWindowLongW(app.taskbar, GWL_EXSTYLE) & WS_EX_LAYOUTRTL) != 0;
+      Log(L"anchor: widgetRightOfTray=%d rtlStyle=%d", app.widgetRightOfTray ? 1 : 0,
+          rtlStyle ? 1 : 0);
+    }
+    L.h = placed.h;
+    L.offsetY = placed.offsetY;
+    x = placed.x;
+    y = placed.y;
+    changed =
+        force || x != app.x || y != app.y || L.w != app.ow || L.h != app.oh || !app.visible;
+    app.x = x;
+    app.y = y;
+    app.ow = L.w;
+    app.oh = L.h;
+  } else {
+    if (!app.anchorMissing) {
+      Log(L"anchor: no usable tray; keeping last position");
+      app.anchorMissing = true;
+    }
+    L.h = app.oh;
+    L.offsetY = app.settings.borderless ? std::max(0, (L.h - L.contentH) / 2) : 0;
   }
-  L.h = placed.h;
-  L.offsetY = placed.offsetY;
-  const int x = placed.x;
-  const int y = placed.y;
-
-  bool changed = force || x != app.x || y != app.y || L.w != app.ow || L.h != app.oh || !app.visible;
-  app.x = x;
-  app.y = y;
-  app.ow = L.w;
-  app.oh = L.h;
 
   // The full-window scan is expensive and talks to DWM. Run it at most once a
   // second, or immediately when the foreground window changes. A drag or a
@@ -3362,13 +3366,14 @@ static void UpdatePosition(App& app, bool force) {
   }
   bool taskbarReady = TaskbarVisible(app, taskbarRect) && IsWindowVisible(app.taskbar) &&
                       !FullscreenOnTaskbarMonitor(app) && !app.coverScanCovered;
-  bool show = taskbarReady && app.hasSample;
+  bool show = taskbarReady && app.hasSample && app.ow > 0;
   app.samplingActive.store(taskbarReady);
 
   if (!show) {
     if (app.visible) ShowWidget(app, false);
     return;
   }
+  if (!placement.result) return;
 
   if (changed) {
     PaintWidget(app);

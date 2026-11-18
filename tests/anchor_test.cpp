@@ -18,13 +18,11 @@ void Check(bool ok, const char* what) {
 }
 
 anchor::Input Make(anchor::Box bar, anchor::Box tray, bool horizontal, int widgetW,
-                   int contentH, int gapPx, bool borderless = false, int insetPx = 0,
-                   bool synthetic = false) {
+                   int contentH, int gapPx, bool borderless = false, int insetPx = 0) {
   anchor::Input in;
   in.bar = bar;
   in.tray = tray;
   in.hasTray = true;
-  in.traySynthetic = synthetic;
   in.horizontal = horizontal;
   in.widgetW = widgetW;
   in.contentH = contentH;
@@ -45,6 +43,11 @@ void Expect(const char* name, const anchor::Input& in, int x, int y, int h, int 
   Check(r.x == x && r.y == y && r.h == h && r.offsetY == offsetY &&
             r.widgetRightOfTray == right,
         name);
+}
+
+void ExpectNoAnchor(const char* name, const anchor::Input& in) {
+  const anchor::Outcome out = anchor::Compute(in);
+  Check(!out.result && out.reason == anchor::Reason::NoAnchor, name);
 }
 
 }  // namespace
@@ -95,14 +98,24 @@ int main() {
   Expect("gap 4000 hits min clamp",
          Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 4000), 4, 8, 32, 0);
 
-  // 1.1.4 passes a negative gap through; commit 4 changes this.
-  Expect("negative gap pass-through",
-         Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, -100), 1672, 8, 32, 0);
+  Expect("negative gap clamped",
+         Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, -100), 1572, 8, 32, 0);
 
-  // The one synthetic-fallback test required for commit 1.
-  Expect("synthetic fallback",
-         Make(Box{0, 0, 1920, 48}, Box{1740, 0, 1920, 48}, true, 228, 32, 6, false, 0, true), 1506,
-         8, 32, 0);
+  {
+    anchor::Input noTray =
+        Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 6);
+    noTray.hasTray = false;
+    ExpectNoAnchor("no tray", noTray);
+    ExpectNoAnchor("zero-width tray",
+                   Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1800, 48}, true, 228, 32, 6));
+    ExpectNoAnchor("zero-height tray",
+                   Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 0}, true, 228, 32, 6));
+    ExpectNoAnchor("tray outside bar",
+                   Make(Box{0, 0, 1000, 48}, Box{900, 0, 1100, 48}, true, 228, 32, 6));
+    Expect("tray wider than half accepted",
+           Make(Box{0, 0, 1000, 48}, Box{0, 0, 700, 48}, true, 100, 32, 6), 706, 8, 32, 0,
+           true);
+  }
 
   {
     anchor::Input in =
