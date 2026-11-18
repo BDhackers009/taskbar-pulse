@@ -33,6 +33,7 @@ struct Result {
   int h = 0;
   int offsetY = 0;
   bool widgetRightOfTray = false;
+  bool feedFallback = false;
 };
 
 enum class Reason { None, NoAnchor };
@@ -79,6 +80,7 @@ inline Outcome Compute(const Input& in) {
 
     const int count = std::min(2, std::max(0, in.feedsCount));
     int chosen = -1;
+    bool feedFallback = false;
     if (!r.widgetRightOfTray) {
       for (int i = 0; i < count; ++i)
         if (in.feeds[i].left <= in.tray.left &&
@@ -86,7 +88,10 @@ inline Outcome Compute(const Input& in) {
           chosen = i;
       if (chosen >= 0) {
         const int candidate = in.feeds[chosen].left - gapPx - in.widgetW;
-        if (candidate >= minX && candidate <= maxX) x = candidate;
+        if (candidate >= minX && candidate <= maxX)
+          x = candidate;
+        else
+          feedFallback = true;
       }
     } else {
       for (int i = 0; i < count; ++i)
@@ -95,18 +100,22 @@ inline Outcome Compute(const Input& in) {
           chosen = i;
       if (chosen >= 0) {
         const int candidate = in.feeds[chosen].right + gapPx;
-        if (candidate >= minX && candidate <= maxX) x = candidate;
+        if (candidate >= minX && candidate <= maxX)
+          x = candidate;
+        else
+          feedFallback = true;
       }
     }
+    r.feedFallback = feedFallback;
     r.x = x;
     r.y = in.bar.top + (barH - h) / 2;
   } else {
-    // Deliberately preserved from 1.1.4; vertical taskbars are a 1.2 feature.
+    // Vertical taskbars are not supported; this is the old arithmetic, not a real layout.
     r.y = in.tray.bottom + gapPx;
     r.x = in.bar.left + (in.bar.right - in.bar.left - in.widgetW) / 2;
   }
 
-  // Keep 1.1.4's clamp order: the max clamp wins when the widget is wider than the bar.
+  // The max clamp wins when the widget is wider than the bar, on purpose.
   if (r.x < minX) r.x = minX;
   if (r.x > maxX) r.x = maxX;
   if (r.y < minY) r.y = minY;

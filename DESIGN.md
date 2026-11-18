@@ -28,7 +28,7 @@ ENERGY 2, RHYTHM 2, MOTION 1. Quiet by default, sharp when a threshold fires.
 
 ## Constraints
 
-- Never wider than the free space left of the notification area unless the user drags it there.
+- Never wider than the free space beside the notification area unless the user drags it there.
 - Never cover taskbar buttons by design. The overlay is a compromise Windows 11 forces, and the README says so.
 - One accent moment per surface. In Settings the accent lives on the switches, the reset link and the keyboard focus ring, nowhere else.
 - Accent-derived text and check marks stay at 4.5:1 against their surface; accent fills and focus rings at 3:1. Tint only as far as the ratio requires, and use the neutral text color when the accent has no hue.

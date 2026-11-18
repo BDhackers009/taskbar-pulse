@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>CPU, GPU, memory, network and temperature, in your taskbar.</b><br>
-  A 305 KB native widget. No installer, no runtime, no telemetry.
+  A 309 KB native widget. No installer, no runtime, no telemetry.
 </p>
 
 <p align="center">
@@ -54,7 +54,7 @@ Measured on a laptop with Windows 11 26H2 at 1920×1200 and 125% scaling, one mi
 
 | | Taskbar Pulse | TrafficMonitor Lite 1.86 |
 | --- | --- | --- |
-| Download | **305 KB, one exe** | 1.92 MB exe |
+| Download | **309 KB, one exe** | 1.92 MB exe |
 | Private memory | **about 9 MB** | 12.0 MB |
 | CPU at 1 s | **about 0.4% of one core** | 0.63% |
 | Temperature | **ACPI thermal zone** | none |
@@ -75,7 +75,7 @@ Settings apply live. Tab moves between controls, arrows change a value, Space or
 
 ## Compatibility
 
-Windows 11 22H2 to 26H2 on x64. Windows 10 1809 and later should work but is untested. No ARM64 build.
+Windows 11 22H2 to 26H2 on x64. Windows 10 1809 and later should work but is untested; the Windows 10 weather-button handling has not been run on a Windows 10 machine. No ARM64 build.
 
 GPU usage comes from the WDDM counters. Some VMs and RDP sessions do not expose them and show a dash.
 
@@ -94,7 +94,7 @@ Visual Studio with the C++ toolset and the Windows 11 SDK.
 .\build.ps1
 ```
 
-The output is `TaskbarPulse.exe`, statically linked. The script also runs the contrast regression test. Every push builds in GitHub Actions, and a `v*` tag publishes a release with the exe and SHA-256.
+The output is `TaskbarPulse.exe`, statically linked. The script also runs the contrast and anchor regression tests. Every push builds in GitHub Actions, and a `v*` tag publishes a release with the exe and SHA-256.
 
 ## License
 

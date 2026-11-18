@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.5
+
+- Right-to-left taskbars: the widget follows the tray to the correct side, and drag and the right-click menu mirror with it.
+- Windows 10 News & Interests / weather buttons are skipped, so the widget no longer covers them.
+- The silent 180 px tray guess is gone. A missing or invalid tray keeps the last valid position instead of moving the widget, and a negative offset is treated as zero at the tray edge.
+- Taskbar placement maths now lives in a tested helper, with anchor tests in the build.
+- Settings footer and tray tooltip report 1.1.5; the exe metadata and manifest are 1.1.5.0.
+
 ## 1.1.4
 
 - Fixed a render-surface failure path that could leave a null Direct2D target and crash the next paint.

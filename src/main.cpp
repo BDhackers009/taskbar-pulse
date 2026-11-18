@@ -66,7 +66,7 @@ using Microsoft::WRL::ComPtr;
 // Small helpers
 
 static constexpr wchar_t kAppName[] = L"Taskbar Pulse";
-static constexpr wchar_t kVersion[] = L"1.1.4";
+static constexpr wchar_t kVersion[] = L"1.1.5";
 static constexpr wchar_t kWndClass[] = L"TaskbarPulse.Widget";
 
 static const UINT WM_APP_SAMPLE = WM_APP + 10;
@@ -1443,6 +1443,7 @@ struct App {
   int dragMoved = 0;
   bool widgetRightOfTray = false;  // derived from the tray position; default LTR
   bool anchorMissing = false;
+  bool feedFallbackLogged = false;
 
   HWND menuHwnd = nullptr;
   bool menuOpen = false;
@@ -2052,39 +2053,49 @@ static void FindTaskbar(App& app) {
 
 static int CollectFeeds(HWND taskbar, const RECT& bar, RECT out[2]) {
   static const wchar_t* kClasses[] = {L"ShellFeedsTaskbarViewWindow", L"DynamicContent2"};
-  static HWND last[2] = {};
-  static int lastCount = -1;
+  static std::wstring lastSignature;
 
-  HWND found[2] = {};
-  const wchar_t* foundClass[2] = {};
+  struct Status {
+    const wchar_t* cls;
+    HWND hwnd;
+    RECT rect;
+    bool hasRect;
+    bool visible;
+    bool accepted;
+  } status[2]{};
+
+  std::wstring signature;
   int count = 0;
-  for (const wchar_t* cls : kClasses) {
+  for (int i = 0; i < 2; ++i) {
+    const wchar_t* cls = kClasses[i];
     HWND feed = FindWindowExW(taskbar, nullptr, cls, nullptr);
-    if (!feed || !IsWindowVisible(feed)) continue;
-    RECT r{};
-    if (!GetWindowRect(feed, &r)) continue;
-    if (r.right <= r.left || r.bottom <= r.top) continue;
-    if (!(r.bottom > bar.top && r.top < bar.bottom)) continue;
-    out[count] = r;
-    found[count] = feed;
-    foundClass[count] = cls;
-    ++count;
+    status[i].cls = cls;
+    status[i].hwnd = feed;
+    status[i].visible = feed && IsWindowVisible(feed);
+    status[i].hasRect = feed && GetWindowRect(feed, &status[i].rect);
+    status[i].accepted =
+        status[i].visible && status[i].hasRect && status[i].rect.right > status[i].rect.left &&
+        status[i].rect.bottom > status[i].rect.top &&
+        status[i].rect.bottom > bar.top && status[i].rect.top < bar.bottom;
+    wchar_t part[96];
+    swprintf_s(part, L"%p:%d:%d:%d;", (void*)feed, status[i].visible ? 1 : 0,
+               status[i].hasRect ? 1 : 0, status[i].accepted ? 1 : 0);
+    signature += part;
+    if (status[i].accepted) out[count++] = status[i].rect;
   }
 
-  bool changed = count != lastCount;
-  for (int i = 0; i < count && !changed; ++i)
-    if (found[i] != last[i]) changed = true;
-  if (changed) {
-    if (count == 0) {
-      Log(L"feeds: none bar=%d,%d,%d,%d", bar.left, bar.top, bar.right, bar.bottom);
-    } else {
-      for (int i = 0; i < count; ++i)
-        Log(L"feeds: %ls hwnd=%p rect=%d,%d,%d,%d visible=1 bar=%d,%d,%d,%d", foundClass[i],
-            found[i], out[i].left, out[i].top, out[i].right, out[i].bottom, bar.left, bar.top,
+  if (signature != lastSignature) {
+    for (const Status& s : status) {
+      if (!s.hwnd) {
+        Log(L"feeds: %ls absent bar=%d,%d,%d,%d", s.cls, bar.left, bar.top, bar.right, bar.bottom);
+      } else {
+        Log(L"feeds: %ls hwnd=%p rect=%d,%d,%d,%d rectValid=%d visible=%d accepted=%d bar=%d,%d,%d,%d",
+            s.cls, s.hwnd, s.rect.left, s.rect.top, s.rect.right, s.rect.bottom,
+            s.hasRect ? 1 : 0, s.visible ? 1 : 0, s.accepted ? 1 : 0, bar.left, bar.top,
             bar.right, bar.bottom);
+      }
     }
-    for (int i = 0; i < 2; ++i) last[i] = i < count ? found[i] : nullptr;
-    lastCount = count;
+    lastSignature = signature;
   }
   return count;
 }
@@ -3337,6 +3348,11 @@ static void UpdatePosition(App& app, bool force) {
     }
     L.h = placed.h;
     L.offsetY = placed.offsetY;
+    if (placed.feedFallback && !app.feedFallbackLogged) {
+      Log(L"feeds: candidate outside bar; using tray anchor");
+      app.feedFallbackLogged = true;
+    }
+    if (!placed.feedFallback) app.feedFallbackLogged = false;
     x = placed.x;
     y = placed.y;
     changed =

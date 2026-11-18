@@ -1,5 +1,4 @@
 // Pins the taskbar placement arithmetic without Windows or Direct2D.
-// Built and run by build.ps1.
 
 #include "../src/taskbar_anchor.h"
 #include <cstdio>
@@ -50,6 +49,11 @@ void ExpectNoAnchor(const char* name, const anchor::Input& in) {
   Check(!out.result && out.reason == anchor::Reason::NoAnchor, name);
 }
 
+void ExpectFeedFallback(const char* name, const anchor::Input& in, bool expected) {
+  const anchor::Outcome out = anchor::Compute(in);
+  Check(out.result && out.result->feedFallback == expected, name);
+}
+
 }  // namespace
 
 int main() {
@@ -74,11 +78,11 @@ int main() {
   Expect("negative-origin bar",
          Make(Box{-1920, 0, 0, 48}, Box{-120, 0, 0, 48}, true, 228, 32, 6), -354, 8, 32, 0);
 
-  // Known 1.1.4 clipping: the max clamp wins on a 30 px bar.
+  // Clips on a 30 px bar: the max clamp wins.
   Expect("small bar clips", Make(Box{0, 0, 1920, 30}, Box{1800, 0, 1920, 30}, true, 228, 32, 6),
          1566, -4, 32, 0);
 
-  // Known 1.1.4 clamp inversion: max wins when the widget is wider than the bar.
+  // Max wins when the widget is wider than the bar.
   Expect("widget wider than bar",
          Make(Box{0, 0, 200, 48}, Box{100, 0, 200, 48}, true, 300, 32, 6), -104, 8, 32, 0);
   Expect("widget exactly fits",
@@ -93,10 +97,15 @@ int main() {
   Expect("192 dpi values",
          Make(Box{0, 0, 3840, 96}, Box{3600, 0, 3840, 96}, true, 456, 64, 12), 3132, 16, 64, 0);
 
+  Expect("gap 0", Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 0), 1572, 8,
+         32, 0);
   Expect("gap 40", Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 40), 1532, 8,
          32, 0);
   Expect("gap 4000 hits min clamp",
          Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 4000), 4, 8, 32, 0);
+  Expect("upgrade borderless offset 4000",
+         Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, 4000, true, 8), 4, 4,
+         40, 4);
 
   Expect("negative gap clamped",
          Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, -100), 1572, 8, 32, 0);
@@ -123,6 +132,7 @@ int main() {
     in.feeds[0] = Box{600, 0, 800, 48};
     in.feedsCount = 1;
     Expect("feeds LTR", in, 494, 8, 32, 0);
+    ExpectFeedFallback("feeds LTR not fallback", in, false);
     in.feeds[1] = Box{700, 0, 800, 48};
     in.feedsCount = 2;
     Expect("feeds LTR inboard", in, 594, 8, 32, 0);
@@ -130,6 +140,7 @@ int main() {
     in.feeds[1] = Box{};
     in.feedsCount = 1;
     Expect("feeds LTR fallback", in, 694, 8, 32, 0);
+    ExpectFeedFallback("feeds LTR fallback flagged", in, true);
   }
   {
     anchor::Input in =
@@ -137,6 +148,7 @@ int main() {
     in.feeds[0] = Box{200, 0, 400, 48};
     in.feedsCount = 1;
     Expect("feeds RTL", in, 406, 8, 32, 0, true);
+    ExpectFeedFallback("feeds RTL not fallback", in, false);
     in.feeds[1] = Box{200, 0, 300, 48};
     in.feedsCount = 2;
     Expect("feeds RTL inboard", in, 306, 8, 32, 0, true);
@@ -144,6 +156,7 @@ int main() {
     in.feeds[1] = Box{};
     in.feedsCount = 1;
     Expect("feeds RTL fallback", in, 206, 8, 32, 0, true);
+    ExpectFeedFallback("feeds RTL fallback flagged", in, true);
   }
 
   Expect("vertical preserved",
@@ -159,6 +172,10 @@ int main() {
   Check(anchor::DragGap(0, 100, 100, 1.0f, false) == 0, "zero drag delta");
   Check(anchor::DragGap(4000, 100, 1000, 1.0f, true) == 4000, "drag clamps at 4000");
   Check(anchor::DragGap(0, 100, 89, 1.25f, false) == 9, "drag rounds at 125%");
+  const int readBack = anchor::DragGap(0, 100, 90, 1.0f, false);
+  Expect("drag gap reproduces x",
+         Make(Box{0, 0, 1920, 48}, Box{1800, 0, 1920, 48}, true, 228, 32, readBack), 1562, 8, 32,
+         0);
 
   std::printf("anchor tests: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
